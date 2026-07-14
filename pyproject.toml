@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "broom"
+version = "0.01"
+description = "Tools for working with BVH motion data."
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "torch",
+]
+
+[project.optional-dependencies]
+all = [
+    "matplotlib",
+    "torch",
+]
+test = [
+    "pytest",
+]
+
+[tool.setuptools]
+packages = [
+    "broom",
+    "broom.bvh",
+    "broom.bvh.analysis",
+    "broom.bvh.filtering",
+    "broom.bvh.in_place",
+    "broom.bvh.interpolation",
+    "broom.bvh.ops",
+    "broom.bvh.render",
+    "broom.bvh.retargeting",
+    "broom.bvh.rotations",
+    "broom.tests",
+]
+
+[tool.setuptools.package-dir]
+broom = "."
+
+[tool.setuptools.package-data]
+"broom.bvh" = ["data/*.json"]
