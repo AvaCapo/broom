@@ -1,0 +1,99 @@
+{
+  "name": "mujoco_humanoid_joint_limits",
+  "units": "degrees",
+  "source": {
+    "model": "MuJoCo Humanoid",
+    "url": "https://github.com/google-deepmind/mujoco/blob/main/model/humanoid/humanoid.xml",
+    "notes": "Ranges are copied from hinge joint range attributes and default joint classes in MuJoCo Humanoid. Shoulder hinge axes are diagonal in MuJoCo, so BVH mapping uses Xrotation and Zrotation as the two constrained shoulder axes."
+  },
+  "joints": {
+    "Hips": {
+      "aliases": ["Spine", "Spine1", "Spine2", "Chest"],
+      "mujoco_joints": ["abdomen_x", "abdomen_y", "abdomen_z"],
+      "dof": 3,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [-35.0, -75.0, -45.0],
+      "max_values": [35.0, 30.0, 45.0]
+    },
+    "LeftUpLeg": {
+      "aliases": ["LeftUpperLeg", "LeftThigh"],
+      "mujoco_joints": ["hip_x_left", "hip_y_left", "hip_z_left"],
+      "dof": 3,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [-30.0, -150.0, -60.0],
+      "max_values": [10.0, 20.0, 35.0]
+    },
+    "RightUpLeg": {
+      "aliases": ["RightUpperLeg", "RightThigh"],
+      "mujoco_joints": ["hip_x_right", "hip_y_right", "hip_z_right"],
+      "dof": 3,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [-30.0, -150.0, -60.0],
+      "max_values": [10.0, 20.0, 35.0]
+    },
+    "LeftLeg": {
+      "aliases": ["LeftShin", "LeftLowerLeg"],
+      "mujoco_joints": ["knee_left"],
+      "dof": 1,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [0.0, -160.0, 0.0],
+      "max_values": [0.0, 2.0, 0.0]
+    },
+    "RightLeg": {
+      "aliases": ["RightShin", "RightLowerLeg"],
+      "mujoco_joints": ["knee_right"],
+      "dof": 1,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [0.0, -160.0, 0.0],
+      "max_values": [0.0, 2.0, 0.0]
+    },
+    "LeftFoot": {
+      "aliases": ["LeftAnkle"],
+      "mujoco_joints": ["ankle_x_left", "ankle_y_left"],
+      "dof": 2,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [-50.0, -50.0, 0.0],
+      "max_values": [50.0, 50.0, 0.0]
+    },
+    "RightFoot": {
+      "aliases": ["RightAnkle"],
+      "mujoco_joints": ["ankle_x_right", "ankle_y_right"],
+      "dof": 2,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [-50.0, -50.0, 0.0],
+      "max_values": [50.0, 50.0, 0.0]
+    },
+    "LeftArm": {
+      "aliases": ["LeftShoulder", "LeftUpperArm"],
+      "mujoco_joints": ["shoulder1_left", "shoulder2_left"],
+      "dof": 2,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [-85.0, 0.0, -85.0],
+      "max_values": [60.0, 0.0, 60.0]
+    },
+    "RightArm": {
+      "aliases": ["RightShoulder", "RightUpperArm"],
+      "mujoco_joints": ["shoulder1_right", "shoulder2_right"],
+      "dof": 2,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [-85.0, 0.0, -85.0],
+      "max_values": [60.0, 0.0, 60.0]
+    },
+    "LeftForeArm": {
+      "aliases": ["LeftForearm", "LeftLowerArm", "LeftElbow"],
+      "mujoco_joints": ["elbow_left"],
+      "dof": 1,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [0.0, -100.0, 0.0],
+      "max_values": [0.0, 50.0, 0.0]
+    },
+    "RightForeArm": {
+      "aliases": ["RightForearm", "RightLowerArm", "RightElbow"],
+      "mujoco_joints": ["elbow_right"],
+      "dof": 1,
+      "channels": ["Xrotation", "Yrotation", "Zrotation"],
+      "min_values": [0.0, -100.0, 0.0],
+      "max_values": [0.0, 50.0, 0.0]
+    }
+  }
+}
