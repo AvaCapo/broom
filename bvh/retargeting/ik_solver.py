@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-from bvh.kinematics import compute_global_positions
-from bvh.schemas import BVHDocument
+from broom.bvh.kinematics import compute_global_positions
+from broom.bvh.schemas import BVHDocument
 
 
 

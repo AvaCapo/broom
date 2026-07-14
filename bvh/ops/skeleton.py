@@ -7,8 +7,8 @@ from dataclasses import replace
 
 import numpy as np
 
-from bvh.io import validate_motion_values
-from bvh.schemas import BVHDocument, BVHJoint
+from broom.bvh.io import validate_motion_values
+from broom.bvh.schemas import BVHDocument, BVHJoint
 
 DEFAULT_HIPS_NAMES = (
     "hips",

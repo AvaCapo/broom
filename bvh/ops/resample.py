@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from bvh.interpolation.utils import (
+from broom.bvh.interpolation.utils import (
     blend_euler_degrees,
     rotation_channel_groups,
 )
-from bvh.ops.motion import (
+from broom.bvh.ops.motion import (
     _require_frame_time,
     with_motion_values,
 )
-from bvh.schemas import BVHDocument
+from broom.bvh.schemas import BVHDocument
 
 
 def resample_fps(document: BVHDocument, target_fps: float) -> BVHDocument:

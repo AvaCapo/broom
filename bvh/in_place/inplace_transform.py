@@ -7,8 +7,8 @@ from typing import Sequence
 
 import numpy as np
 
-from bvh.in_place.schemas import InPlacePCAResult
-from bvh.in_place.config import (
+from broom.bvh.in_place.schemas import InPlacePCAResult
+from broom.bvh.in_place.config import (
     DEFAULT_BODY_JOINT_WEIGHTS,
     DEFAULT_ROOT_AXES,
     InPlacePCAConfig,
@@ -17,16 +17,16 @@ from bvh.in_place.config import (
     PCA_SOURCE_ROOT,
 )
 
-from bvh.math_helpers import principal_direction
-from bvh.kinematics import compute_global_positions
-from bvh.channels import (position_channel_dimension,
+from broom.bvh.math_helpers import principal_direction
+from broom.bvh.kinematics import compute_global_positions
+from broom.bvh.channels import (position_channel_dimension,
                                                   root_points,
                                                   select_body_joints,
                                                   weighted_body_points)
-from bvh.io import load_bvh_document, write_bvh_with_root_channels
-from bvh.foot_lock import apply_root_foot_lock
+from broom.bvh.io import load_bvh_document, write_bvh_with_root_channels
+from broom.bvh.foot_lock import apply_root_foot_lock
 
-from bvh.in_place.utils import (
+from broom.bvh.in_place.utils import (
     remove_smoothed_pca_trend,
     validate_axis_set,
 )

@@ -8,12 +8,12 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from bvh.joint_limits import (
+from broom.bvh.joint_limits import (
     DEFAULT_JOINT_LIMITS_PATH,
     load_joint_limits,
     resolve_joint_limit,
 )
-from bvh.schemas import BVHJoint
+from broom.bvh.schemas import BVHJoint
 
 
 def find_motion_index(

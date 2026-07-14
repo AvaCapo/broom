@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-from bvh.schemas import BVHDocument
+from broom.bvh.schemas import BVHDocument
 
 
 @dataclass(frozen=True)

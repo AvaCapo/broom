@@ -7,7 +7,7 @@ from typing import Sequence
 import numpy as np
 
 
-from bvh.math_helpers import (
+from broom.bvh.math_helpers import (
     moving_average,
 )
 

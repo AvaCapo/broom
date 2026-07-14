@@ -8,10 +8,10 @@ from typing import Any, Optional
 
 import matplotlib.pyplot as plt
 
-from bvh.analysis.kinematics import (
+from broom.bvh.analysis.kinematics import (
     compute_world_kinematics,
 )
-from bvh.analysis.plotting import (
+from broom.bvh.analysis.plotting import (
     PANEL_PRESETS,
     SERIES,
     PlotConfig,
@@ -22,8 +22,8 @@ from bvh.analysis.plotting import (
     plot_trajectory_planes,
     plot_trajectory_planes_multi,
 )
-from bvh.analysis.schemas import WorldKinematicsResult
-from bvh.schemas import BVHDocument
+from broom.bvh.analysis.schemas import WorldKinematicsResult
+from broom.bvh.schemas import BVHDocument
 
 try:
     import ipywidgets as widgets

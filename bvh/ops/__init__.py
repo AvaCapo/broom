@@ -1,6 +1,6 @@
 """Basic BVH motion operations."""
 
-from bvh.ops.motion import (
+from broom.bvh.ops.motion import (
     fill_motion,
     reverse,
     slice_by_time,
@@ -8,8 +8,8 @@ from bvh.ops.motion import (
     with_motion_values,
     zero_origin,
 )
-from bvh.ops.resample import resample_fps
-from bvh.ops.skeleton import (
+from broom.bvh.ops.resample import resample_fps
+from broom.bvh.ops.skeleton import (
     compute_rest_joint_positions,
     estimate_skeleton_height,
     estimate_hips_height,

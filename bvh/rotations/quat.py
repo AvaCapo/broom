@@ -3,7 +3,7 @@
 from __future__ import annotations
 import numpy as np
 
-from bvh.math_helpers import normalize_vectors
+from broom.bvh.math_helpers import normalize_vectors
 
 def from_scaled_angle_axis(scaledaxis: np.ndarray) -> np.ndarray:
     """

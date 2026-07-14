@@ -5,9 +5,9 @@ from dataclasses import replace
 
 import numpy as np
 
-from bvh.kinematics import compute_global_positions
-from bvh.ops.skeleton import estimate_skeleton_height
-from bvh.schemas import BVHDocument
+from broom.bvh.kinematics import compute_global_positions
+from broom.bvh.ops.skeleton import estimate_skeleton_height
+from broom.bvh.schemas import BVHDocument
 
 
 def skeleton_scale(

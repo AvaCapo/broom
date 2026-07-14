@@ -5,7 +5,7 @@ from typing import Sequence
 
 import numpy as np
 
-from bvh.schemas import BVHDocument, BVHJoint
+from broom.bvh.schemas import BVHDocument, BVHJoint
 
 
 def root_channel_indices(

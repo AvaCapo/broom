@@ -6,12 +6,12 @@ from collections.abc import Sequence
 from typing import Optional
 import numpy as np
 
-from bvh.interpolation.utils import (
+from broom.bvh.interpolation.utils import (
     root_position_indices,
     validate_compatible_documents,
 )
-from bvh.io import validate_motion_values
-from bvh.schemas import BVHDocument
+from broom.bvh.io import validate_motion_values
+from broom.bvh.schemas import BVHDocument
 
 
 def fill_motion(

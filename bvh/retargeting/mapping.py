@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 import re
 
-from bvh.channels import joint_name_matches
-from bvh.schemas import BVHDocument
-from bvh.retargeting.schemas import JointMatch, MappingResult
+from broom.bvh.channels import joint_name_matches
+from broom.bvh.schemas import BVHDocument
+from broom.bvh.retargeting.schemas import JointMatch, MappingResult
 
 
 def build_joint_mapping(

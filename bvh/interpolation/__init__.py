@@ -1,10 +1,10 @@
 """BVH interpolation helpers."""
 
-from bvh.interpolation.interpolation import Interpolation
-from bvh.interpolation.schemas import (
+from broom.bvh.interpolation.interpolation import Interpolation
+from broom.bvh.interpolation.schemas import (
     InterpolationResult,
 )
-from bvh.interpolation.utils import (
+from broom.bvh.interpolation.utils import (
     blend_euler_degrees,
     blend_frame_ranges,
     count_trailing_static_frames,

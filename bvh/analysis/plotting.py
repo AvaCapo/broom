@@ -8,11 +8,11 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 
-from bvh.analysis.kinematics import (
+from broom.bvh.analysis.kinematics import (
     compute_world_kinematics,
 )
-from bvh.analysis.schemas import WorldKinematicsResult
-from bvh.schemas import BVHDocument
+from broom.bvh.analysis.schemas import WorldKinematicsResult
+from broom.bvh.schemas import BVHDocument
 
 _SIGNAL_KEY_MAP = {
     "position": "pos_w",

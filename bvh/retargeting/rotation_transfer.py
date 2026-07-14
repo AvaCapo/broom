@@ -3,12 +3,12 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from bvh.interpolation.utils import wrap_degrees
-from bvh.math_helpers import normalize_vectors
-from bvh.ops.skeleton import compute_rest_joint_positions
-from bvh.schemas import BVHDocument
-from bvh.retargeting.mapping import invert_mapping
-from bvh.retargeting.schemas import RotationChannels
+from broom.bvh.interpolation.utils import wrap_degrees
+from broom.bvh.math_helpers import normalize_vectors
+from broom.bvh.ops.skeleton import compute_rest_joint_positions
+from broom.bvh.schemas import BVHDocument
+from broom.bvh.retargeting.mapping import invert_mapping
+from broom.bvh.retargeting.schemas import RotationChannels
 
 
 def rotation_channels_by_name(document: BVHDocument) -> dict[str, RotationChannels]:

@@ -1,6 +1,6 @@
 """Analysis helpers built on top of BVH documents."""
 
-from bvh.analysis.calculus import (
+from broom.bvh.analysis.calculus import (
     derivative,
     drift_correct_to_reference,
     integrate,
@@ -8,13 +8,13 @@ from bvh.analysis.calculus import (
     integrate_simpson,
     integrate_trapezoid,
 )
-from bvh.analysis.filters import lowpass_butter
-from bvh.analysis.kinematics import (
+from broom.bvh.analysis.filters import lowpass_butter
+from broom.bvh.analysis.kinematics import (
     compute_world_kinematics,
     compute_world_kinematics_many,
     reconstruct,
 )
-from bvh.analysis.plotting import (
+from broom.bvh.analysis.plotting import (
     PANEL_PRESETS,
     SERIES,
     PlotConfig,
@@ -25,12 +25,12 @@ from bvh.analysis.plotting import (
     plot_trajectory_planes,
     plot_trajectory_planes_multi,
 )
-from bvh.analysis.schemas import (
+from broom.bvh.analysis.schemas import (
     ReconstructionResult,
     WorldKinematicsMeta,
     WorldKinematicsResult,
 )
-from bvh.analysis.ui import (
+from broom.bvh.analysis.ui import (
     MotionCompareUI,
     MotionPlotUI,
 )

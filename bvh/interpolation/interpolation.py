@@ -7,17 +7,17 @@ from typing import Sequence
 
 import numpy as np
 
-from bvh.io import (
+from broom.bvh.io import (
     load_bvh_document,
     write_bvh_with_motion_values,
 )
-from bvh.schemas import BVHDocument
-from bvh.interpolation.config import (
+from broom.bvh.schemas import BVHDocument
+from broom.bvh.interpolation.config import (
     DEFAULT_PRECISION,
     DEFAULT_STATIC_THRESHOLD,
     DEFAULT_STATIC_WINDOW,
 )
-from bvh.interpolation.utils import (
+from broom.bvh.interpolation.utils import (
     interpolate_motion_values,
     trim_trailing_static_frames,
 )

@@ -7,9 +7,9 @@ from typing import Sequence
 
 import numpy as np
 
-from bvh.channels import root_channel_indices
-from bvh.joint_limits import DEFAULT_JOINT_LIMITS_PATH
-from bvh.parsing import (
+from broom.bvh.channels import root_channel_indices
+from broom.bvh.joint_limits import DEFAULT_JOINT_LIMITS_PATH
+from broom.bvh.parsing import (
     extract_frame_count,
     extract_frame_time,
     extract_root_channels,
@@ -18,7 +18,7 @@ from bvh.parsing import (
     parse_hierarchy,
     read_motion_rows,
 )
-from bvh.schemas import BVHDocument
+from broom.bvh.schemas import BVHDocument
 
 
 def load_bvh_document(

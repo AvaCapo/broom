@@ -1,9 +1,9 @@
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
-from bvh.schemas import BVHDocument, BVHJoint
-from bvh.interpolation.schemas import InterpolationResult
-from bvh.io import validate_motion_values
+from broom.bvh.schemas import BVHDocument, BVHJoint
+from broom.bvh.interpolation.schemas import InterpolationResult
+from broom.bvh.io import validate_motion_values
 
 
 

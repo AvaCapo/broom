@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from bvh.channels import position_channel_dimension
-from bvh.schemas import BVHDocument
+from broom.bvh.channels import position_channel_dimension
+from broom.bvh.schemas import BVHDocument
 
 
 def compute_global_positions(document: BVHDocument) -> np.ndarray:
