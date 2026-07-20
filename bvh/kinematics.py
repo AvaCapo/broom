@@ -11,6 +11,18 @@ from broom.bvh.schemas import BVHDocument
 def compute_global_positions(document: BVHDocument) -> np.ndarray:
     """Compute global joint positions for each frame."""
 
+    positions, _ = compute_global_transforms(document)
+    return positions
+
+
+def compute_global_transforms(document: BVHDocument) -> tuple[np.ndarray, np.ndarray]:
+    """Compute global joint positions and rotations for each frame.
+
+    Returns a ``(positions, rotations)`` tuple with shapes ``(F, J, 3)`` and
+    ``(F, J, 3, 3)``. Rotation channels are composed in their declared BVH
+    order, using the same convention as :func:`compute_global_positions`.
+    """
+
     frames = document.motion_values.shape[0]
     joint_count = len(document.joints)
     positions = np.zeros((frames, joint_count, 3), dtype=np.float64)
@@ -51,7 +63,7 @@ def compute_global_positions(document: BVHDocument) -> np.ndarray:
                 "fij,fj->fi", parent_rotation, local_position
             )
 
-    return positions
+    return positions, rotations
 
 
 def axis_rotation_matrices(axis: str, radians: np.ndarray) -> np.ndarray:

@@ -22,7 +22,7 @@ from broom.bvh.joint_limits import (
     load_joint_limits,
     resolve_joint_limit,
 )
-from broom.bvh.kinematics import compute_global_positions
+from broom.bvh.kinematics import compute_global_positions, compute_global_transforms
 from broom.bvh.schemas import BVHDocument, BVHJoint
 
 __all__ = (
@@ -31,6 +31,7 @@ __all__ = (
     "DEFAULT_JOINT_LIMITS_PATH",
     "JointLimit",
     "compute_global_positions",
+    "compute_global_transforms",
     "joint_name_matches",
     "load_bvh_document",
     "load_joint_limits",

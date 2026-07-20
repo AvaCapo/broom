@@ -24,6 +24,7 @@ from broom.bvh.retargeting.schemas import (
     MappingResult,
     RetargetResult,
 )
+from broom.bvh.retargeting.smplx import retarget_bvh_to_smplx
 
 __all__ = (
     "JointMatch",
@@ -35,6 +36,7 @@ __all__ = (
     "map_joints",
     "rotation_channels_by_name",
     "retarget_bvh_file",
+    "retarget_bvh_to_smplx",
     "retarget_motion",
     "score_joint_match",
     "skeleton_scale",
