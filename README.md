@@ -1,5 +1,9 @@
 # broom
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/AvaCapo/broom/main/cover.png" alt="broom - BVH motion processing toolkit" width="100%">
+</p>
+
 `broom` is a Python toolkit for loading, validating, editing, analyzing, interpolating, and retargeting human motion stored in the [Biovision Hierarchy (BVH)](https://en.wikipedia.org/wiki/Biovision_Hierarchy) format.
 
 The library keeps the skeleton hierarchy, channel layout, timing metadata, and motion matrix together in a small `BVHDocument` data model. Most operations return a new document or array instead of mutating the source, so processing steps can be composed into reproducible motion pipelines.
