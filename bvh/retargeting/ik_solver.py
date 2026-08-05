@@ -5,7 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-import torch
+
+try:
+    import torch
+except ImportError as exc:  # pragma: no cover - depends on optional extra
+    raise ImportError(
+        "PyTorch is required for BVH IK refinement. "
+        "Install it with `python -m pip install 'broom[ik]'`."
+    ) from exc
+
 from broom.bvh.kinematics import compute_global_positions
 from broom.bvh.schemas import BVHDocument
 
