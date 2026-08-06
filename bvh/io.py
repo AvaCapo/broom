@@ -20,19 +20,24 @@ from broom.bvh.parsing import (
 )
 from broom.bvh.schemas import BVHDocument
 
-
-def load_bvh_document(
-    path: str | Path, root_name: str | None = None,
-    motion_name: str = "MOTION",
-    joint_limits_path: str | Path | None = DEFAULT_JOINT_LIMITS_PATH,
+def _load_bvh_document_from_lines(
+    lines: Sequence[str],
+    source: Path,
+    root_name: str | None,
+    motion_name: str,
+    joint_limits_path: str | Path | None,
 ) -> BVHDocument:
-    """Load a BVH document from the specified file path."""
+    """Parse a BVH document from lines already loaded in memory."""
 
-    source = Path(path)
-    lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
-    motion_index = find_motion_index(lines, motion_name=motion_name)
+    lines = list(lines)
+
+    motion_index = find_motion_index(
+        lines,
+        motion_name=motion_name,
+    )
     hierarchy_lines = lines[:motion_index]
     motion_header_lines = lines[motion_index:]
+
     joints, total_channels = parse_hierarchy(
         hierarchy_lines,
         joint_limits_path=joint_limits_path,
@@ -44,13 +49,17 @@ def load_bvh_document(
         hierarchy_lines,
         expected_root_name=root_name,
     )
-    data_start_index = find_motion_data_start(lines, motion_index)
+
+    data_start_index = find_motion_data_start(
+        lines,
+        motion_index,
+    )
     motion_rows, motion_values = read_motion_rows(
         lines[data_start_index:],
         total_channels=total_channels,
     )
     if motion_values.shape[0] == 0:
-        raise ValueError("No motion frames found in BVH file.")
+        raise ValueError("No motion frames found in BVH document.")
 
     return BVHDocument(
         path=source,
@@ -64,6 +73,79 @@ def load_bvh_document(
         frame_time=extract_frame_time(motion_header_lines),
         declared_frames=extract_frame_count(motion_header_lines),
     )
+
+
+def load_bvh_document(
+    path: str | Path,
+    root_name: str | None = None,
+    motion_name: str = "MOTION",
+    joint_limits_path: str | Path | None = DEFAULT_JOINT_LIMITS_PATH,
+) -> BVHDocument:
+    """Load a BVH document from a file."""
+
+    source = Path(path)
+    text = source.read_text(encoding="utf-8-sig")
+
+    return _load_bvh_document_from_lines(
+        text.splitlines(keepends=True),
+        source=source,
+        root_name=root_name,
+        motion_name=motion_name,
+        joint_limits_path=joint_limits_path,
+    )
+
+
+def load_bvh_document_from_text(
+    text: str,
+    root_name: str | None = None,
+    motion_name: str = "MOTION",
+    joint_limits_path: str | Path | None = DEFAULT_JOINT_LIMITS_PATH,
+) -> BVHDocument:
+    """Load a BVH document from text without accessing the filesystem."""
+
+    if not isinstance(text, str):
+        raise TypeError(
+            f"text must be str, got {type(text).__name__}"
+        )
+
+    return _load_bvh_document_from_lines(
+        text.splitlines(keepends=True),
+        source=Path("<memory>"),
+        root_name=root_name,
+        motion_name=motion_name,
+        joint_limits_path=joint_limits_path,
+    )
+
+
+def load_bvh_document_from_bytes(
+    data: bytes | bytearray | memoryview,
+    root_name: str | None = None,
+    motion_name: str = "MOTION",
+    joint_limits_path: str | Path | None = DEFAULT_JOINT_LIMITS_PATH,
+    encoding: str = "utf-8-sig",
+) -> BVHDocument:
+    """Load a BVH document directly from bytes without creating a file."""
+
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError(
+            "data must be bytes, bytearray, or memoryview, "
+            f"got {type(data).__name__}"
+        )
+
+    try:
+        text = bytes(data).decode(encoding)
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"BVH data is not valid {encoding} text"
+        ) from exc
+
+    return load_bvh_document_from_text(
+        text,
+        root_name=root_name,
+        motion_name=motion_name,
+        joint_limits_path=joint_limits_path,
+    )
+
 
 
 def write_bvh_with_channel_values(

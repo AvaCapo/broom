@@ -10,6 +10,8 @@ from broom.bvh.channels import (
 )
 from broom.bvh.io import (
     load_bvh_document,
+    load_bvh_document_from_bytes,
+    load_bvh_document_from_text,
     update_prefix_frame_count,
     validate_motion_values,
     write_bvh_with_channel_values,
@@ -34,6 +36,8 @@ __all__ = (
     "compute_global_transforms",
     "joint_name_matches",
     "load_bvh_document",
+    "load_bvh_document_from_bytes",
+    "load_bvh_document_from_text",
     "load_joint_limits",
     "position_channel_dimension",
     "resolve_joint_limit",
