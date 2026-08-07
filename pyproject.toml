@@ -39,7 +39,6 @@ packages = [
     "broom.bvh.render",
     "broom.bvh.retargeting",
     "broom.bvh.rotations",
-    "broom.tests",
 ]
 
 [tool.setuptools.package-dir]
