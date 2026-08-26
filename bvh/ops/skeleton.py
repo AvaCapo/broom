@@ -18,6 +18,73 @@ DEFAULT_HIPS_NAMES = (
 )
 
 
+def skeleton_tree(
+    skeleton: BVHDocument | Sequence[BVHJoint],
+    *,
+    show_channels: bool = False,
+    show_offsets: bool = False,
+    max_depth: int | None = None,
+) -> str:
+    """Return the skeleton hierarchy formatted as an ASCII tree."""
+
+    joints = (
+        skeleton.joints
+        if isinstance(skeleton, BVHDocument)
+        else tuple(skeleton)
+    )
+    if not joints:
+        return ""
+
+    children: list[list[int]] = [[] for _ in joints]
+    roots: list[int] = []
+    for index, joint in enumerate(joints):
+        if joint.parent == -1:
+            roots.append(index)
+        else:
+            children[joint.parent].append(index)
+
+    lines: list[str] = []
+    stack: list[tuple[int, str, bool, int]] = [
+        (root_index, "", root_offset == len(roots) - 1, 0)
+        for root_offset, root_index in reversed(list(enumerate(roots)))
+    ]
+    while stack:
+        joint_index, prefix, is_last, depth = stack.pop()
+        branch = "`-- " if is_last else "|-- "
+        joint = joints[joint_index]
+        line = prefix + branch + joint.name
+
+        details: list[str] = []
+        if show_channels and joint.channels:
+            details.append(f"channels={list(joint.channels)}")
+        if show_offsets:
+            offset = np.asarray(joint.offset, dtype=np.float64)
+            details.append(
+                "offset=["
+                f"{offset[0]:.3f}, {offset[1]:.3f}, {offset[2]:.3f}"
+                "]"
+            )
+        if details:
+            line += "  (" + ", ".join(details) + ")"
+        lines.append(line)
+
+        if max_depth is not None and depth >= max_depth:
+            continue
+
+        child_prefix = prefix + ("    " if is_last else "|   ")
+        joint_children = children[joint_index]
+        for child_offset, child_index in reversed(list(enumerate(joint_children))):
+            stack.append(
+                (
+                    child_index,
+                    child_prefix,
+                    child_offset == len(joint_children) - 1,
+                    depth + 1,
+                )
+            )
+    return "\n".join(lines)
+
+
 def compute_rest_joint_positions(joints: Sequence[BVHJoint]) -> np.ndarray:
     """Return global rest-pose joint positions reconstructed from offsets."""
 

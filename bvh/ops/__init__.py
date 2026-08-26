@@ -15,6 +15,7 @@ from broom.bvh.ops.skeleton import (
     estimate_hips_height,
     find_hips_joint_index,
     scale_skeleton,
+    skeleton_tree,
 )
 
 __all__ = (
@@ -27,6 +28,7 @@ __all__ = (
     "reverse",
     "scale_skeleton",
     "slice_by_time",
+    "skeleton_tree",
     "trim_frames",
     "with_motion_values",
     "zero_origin",
