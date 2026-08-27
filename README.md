@@ -1,4 +1,4 @@
-# broom
+# BROOM: BVH Read, Optimize, Operate and Manipulate
 
 <p align="center">
   <img src="cover.png" alt="broom - BVH motion processing toolkit" width="100%">
@@ -660,6 +660,13 @@ refined_values = optimize_retargeted_motion_with_ik(
 ```
 
 The IK API currently lives in the implementation module rather than the package-level retargeting exports. Treat it as an advanced API that may change more quickly than `retarget_motion()`.
+
+## Interactive rendering
+
+`broom.bvh.render` provides optional Meshcat and Viser viewers. Their
+dependencies are not declared in `pyproject.toml` yet. See
+[docs/rendering.md](docs/rendering.md) for the viewer API, tested versions,
+and links to upstream installation instructions.
 
 ## Public API overview
 

@@ -1,0 +1,31 @@
+# Operating system and editor files
+.DS_Store
+.vscode/
+
+# Python bytecode and virtual environments
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+
+# Packaging and test artifacts
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Static-analysis caches
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter runtime artifacts
+.ipynb_checkpoints/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
