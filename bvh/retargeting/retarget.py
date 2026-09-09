@@ -40,11 +40,18 @@ def retarget_motion(
     initial_pose: str = "zero",
     floor_align: bool = True,
     strict: bool = False,
+    *,
+    floor_use_rest_pose: bool = False,
+    floor_first_frame_only: bool = True,
 ) -> RetargetResult:
     """Transfer source BVH motion onto a target BVH skeleton.
 
     ``joint_map`` uses source joint names as keys and target joint names as
     values. If it is omitted, joints are matched by normalized names.
+    When floor_align is enabled, floor_first_frame_only selects the first
+    output frame instead of the whole clip for floor estimation;
+    floor_use_rest_pose additionally includes rest pose. Defaults preserve
+    first-frame-only estimation without rest pose.
     """
 
     if source_document.frame_count <= 0:
@@ -120,20 +127,20 @@ def retarget_motion(
             target_motion=target_motion,
             scale=1.0,
         )
-    if floor_align:
-        align_root_to_floor(
-            document=target_document,
-            motion_values=target_motion,
-        )
-
     output_document = with_motion_values(
         document=target_document,
         motion_values=target_motion,
         frame_time=source_document.frame_time,
     )
+    if floor_align:
+        output_document = align_root_to_floor(
+            output_document,
+            use_rest_pose=floor_use_rest_pose,
+            first_frame_only=floor_first_frame_only,
+        )
     return RetargetResult(
         document=output_document,
-        motion_values=target_motion,
+        motion_values=output_document.motion_values,
         joint_map=source_to_target,
         unmapped_source_joints=unmapped_sources(source_document, source_to_target),
         unmapped_target_joints=unmapped_targets(target_document, source_to_target),
@@ -154,8 +161,14 @@ def retarget_bvh_file(
     floor_align: bool = True,
     strict: bool = False,
     precision: int = 6,
+    *,
+    floor_use_rest_pose: bool = False,
+    floor_first_frame_only: bool = True,
 ) -> RetargetResult:
-    """Load two BVH files, retarget the motion, and write the output BVH."""
+    """Load two BVH files, retarget the motion, and write the output BVH.
+
+    Floor estimation options are forwarded to retarget_motion.
+    """
 
     if joint_map is not None and mapping_path is not None:
         raise ValueError("Pass either joint_map or mapping_path, not both.")
@@ -174,6 +187,8 @@ def retarget_bvh_file(
         initial_pose=initial_pose,
         floor_align=floor_align,
         strict=strict,
+        floor_use_rest_pose=floor_use_rest_pose,
+        floor_first_frame_only=floor_first_frame_only,
     )
     write_bvh_with_motion_values(
         document=result.document,

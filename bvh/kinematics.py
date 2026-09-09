@@ -15,16 +15,29 @@ def compute_global_positions(document: BVHDocument) -> np.ndarray:
     return positions
 
 
-def compute_global_transforms(document: BVHDocument) -> tuple[np.ndarray, np.ndarray]:
+def compute_global_transforms(
+    document: BVHDocument, *, local_rotations: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     """Compute global joint positions and rotations for each frame.
+
+    local_rotations optionally supplies (F, J, 3, 3) local rotation matrices
+    instead of Euler channels. Offsets and translations still use the document.
+    Matrices must be finite and orthonormal; orthonormality is caller-owned.
 
     Returns a ``(positions, rotations)`` tuple with shapes ``(F, J, 3)`` and
     ``(F, J, 3, 3)``. Rotation channels are composed in their declared BVH
     order, using the same convention as :func:`compute_global_positions`.
     """
 
+    # Supplied local matrices override Euler channels, not offsets/translations.
     frames = document.motion_values.shape[0]
     joint_count = len(document.joints)
+    if local_rotations is not None:
+        local_rotations = np.asarray(local_rotations, dtype=np.float64)
+        if local_rotations.shape != (frames, joint_count, 3, 3):
+            raise ValueError("local_rotations must have shape (frames, joints, 3, 3).")
+        if not np.all(np.isfinite(local_rotations)):
+            raise ValueError("local_rotations must be finite.")
     positions = np.zeros((frames, joint_count, 3), dtype=np.float64)
     rotations = np.zeros((frames, joint_count, 3, 3), dtype=np.float64)
 
@@ -44,12 +57,14 @@ def compute_global_transforms(document: BVHDocument) -> tuple[np.ndarray, np.nda
                 local_position[
                     :, position_channel_dimension(channel)
                 ] += values
-            elif channel.endswith("rotation"):
+            elif channel.endswith("rotation") and local_rotations is None:
                 local_rotation = np.matmul(
                     local_rotation,
                     axis_rotation_matrices(channel[0], np.deg2rad(values)),
                 )
 
+        if local_rotations is not None:
+            local_rotation = local_rotations[:, joint_index]
         if joint.parent == -1:
             positions[:, joint_index, :] = local_position
             rotations[:, joint_index, :, :] = local_rotation
