@@ -20,6 +20,8 @@ from broom.bvh.retargeting.rotation_transfer import (
     rotation_channels_by_name,
     transfer_fk_rotations,
 )
+from broom.bvh.retargeting.semantic_projection import semantic_skeleton_projection
+from broom.bvh.retargeting.relational_constraints import build_relational_constraints
 from broom.bvh.retargeting.schemas import (
     JointMatch,
     MappingResult,
@@ -30,7 +32,9 @@ from broom.bvh.retargeting.spacetime import (
     floor_constraint,
     joint_limit_constraint,
     position_constraint,
+    relational_constraint,
     retarget_motion_spacetime,
+    solve_motion_spacetime,
     stationary_constraint,
 )
 from broom.bvh.retargeting.utils import (
@@ -45,6 +49,7 @@ __all__ = (
     "align_root_to_floor",
     "estimate_floor_level",
     "build_joint_mapping",
+    "build_relational_constraints",
     "compute_mapped_position_error",
     "floor_constraint",
     "joint_limit_constraint",
@@ -57,8 +62,11 @@ __all__ = (
     "retarget_bvh_to_smplx",
     "retarget_motion",
     "retarget_motion_spacetime",
+    "relational_constraint",
+    "semantic_skeleton_projection",
     "score_joint_match",
     "skeleton_scale",
+    "solve_motion_spacetime",
     "stationary_constraint",
     "transfer_fk_rotations",
     "transfer_root_translation",

@@ -150,7 +150,7 @@ If the source was aligned with `align_root_to_floor(..., floor_height=0.0)`, `fl
 
 ## Constraint inputs
 
-Every constraint has a unique `name`, a target `joint`, frame indices, and a non-negative `weight`. Weights are soft penalties, so inspect residuals rather than assuming every constraint was met exactly.
+Every constraint has a unique `name` and frame indices. Most constraints use one target `joint`; `relational` uses target endpoints `joint_a` and `joint_b`. `weight` is optional for `position`, `stationary`, and `floor`: when omitted, the solver derives it from `constraint_tolerance`. An explicit non-negative `weight` overrides that default. Weights are soft penalties, so inspect residuals rather than assuming every constraint was met exactly.
 
 | Type | Required fields | Meaning |
 | --- | --- | --- |
@@ -158,10 +158,13 @@ Every constraint has a unique `name`, a target `joint`, frame indices, and a non
 | `stationary` | optional `axes` | Keep selected world coordinates unchanged between consecutive listed frames. |
 | `floor` | optional `normal`, `offset` | Penalize positions below a plane. Defaults to the Y=0 plane. |
 | `joint_limit` | `minimum`, `maximum` | Penalize BVH Euler rotation channels outside declared bounds. |
+| `relational` | `joint_a`, `joint_b`, `source_normalized_distance`, `target_path_length`; optional `activation` | Match the endpoint distance normalized by the target rest-pose kinematic path length to the source-normalized distance. `activation` defaults to `1.0`. |
 
 For `position`, `positions` can be one constant point or one point per frame. It may contain full XYZ coordinates or only the selected axes. A Y-only per-frame target must have shape `(frame_count, 1)`, as in the examples.
 
 Use a full `"XYZ"` position constraint when a joint must remain at a specific world-space location, such as a stair tread or a marked ground point. For free walking, Y position plus XZ stationary contact is usually the better starting constraint: it preserves ground contact without requiring target steps to land in the source footprints.
+
+By default, `constraint_tolerance=0.005` represents a 5 mm positional error. The solver scales it by the resolved root scale and uses `1 / tolerance_target**2` as the spatial constraint weight. This assumes source units represent meters before the scale is applied. For `stationary`, the tolerance applies to each adjacent selected-frame displacement, not accumulated drift across the interval. `joint_limit` remains degree-valued and defaults to weight `1.0`.
 
 ## Quick single-file experiment
 
@@ -194,6 +197,7 @@ Then use `target` in the minimal-retarget call above. Keep both legs symmetric w
 - `control_point_spacing`: frames between cubic B-spline breakpoints. Smaller values allow more local corrections (higher frequency); larger values enforce broader changes.
 - `control_weight`: penalty on correction control points. Higher values keep the result closer to the initial transferred motion.
 - `parameter_weights`: one value for every optimized root-translation or rotation parameter. Rotation corrections are measured in radians. To compare with an older degree-based angular penalty, a starting conversion is `(180 / np.pi) ** 2` for rotation parameters.
+- `constraint_tolerance`: source-space spatial tolerance used only when `position`, `stationary`, or `floor` omit `weight`. The default `0.005` is 5 mm; it is multiplied by the resolved root scale before deriving the target-space weight.
 - `max_nfev`: solver evaluation budget. Check `success`, `message`, and residuals after every run.
 
 ## Limitations

@@ -11,7 +11,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 import numpy as np
-import warnings
 from scipy.interpolate import BSpline
 from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import OptimizeResult, least_squares
@@ -22,7 +21,13 @@ from broom.bvh.kinematics import compute_global_positions, compute_global_transf
 from broom.bvh.rotations.rotvec import right_jacobian
 from broom.bvh.ops.motion import with_motion_values
 from broom.bvh.retargeting.root_motion import skeleton_scale
+from broom.bvh.retargeting.rotation_transfer import matrices_to_euler_near_reference
 from broom.bvh.schemas import BVHDocument
+
+
+# 5 mm is a practical default positional error for human animation in meters,
+# not a claim that every motion or target has the same acceptable tolerance.
+DEFAULT_CONSTRAINT_TOLERANCE = 5.0e-3
 
 
 def _coordinate_indices(axes: str) -> list[int]:
@@ -100,6 +105,24 @@ def stationary_constraint(
     ).reshape(-1)
 
 
+def relational_constraint(
+    global_positions: np.ndarray,
+    joint_a_index: int,
+    joint_b_index: int,
+    frames: np.ndarray,
+    source_normalized_distance: np.ndarray,
+    target_path_length: float,
+    weight: float = 1.0,
+) -> np.ndarray:
+    """Match source-normalized distance between two target joint origins."""
+
+    displacement = global_positions[frames, joint_a_index] - global_positions[frames, joint_b_index]
+    distance = np.linalg.norm(displacement, axis=1)
+    return np.sqrt(float(weight)) * (
+        distance / float(target_path_length) - source_normalized_distance
+    )
+
+
 def joint_limit_constraint(
     motion_values: np.ndarray,
     channel_indices: np.ndarray,
@@ -162,25 +185,6 @@ def position_jacobian(
     return result
 
 
-def euler_near_reference(matrices: np.ndarray, order: str, reference: np.ndarray) -> np.ndarray:
-    """Decode intrinsic XYZ permutations in radians on the branch nearest reference.
-
-    Both Tait-Bryan solutions and 2*pi shifts are considered per frame.
-    This preserves a nearby source branch, not arbitrary temporal unwrapping.
-    """
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="Gimbal lock detected")
-        angles = Rotation.from_matrix(matrices).as_euler(order)
-    alternate = angles.copy()
-    alternate[:, 0] += np.pi
-    alternate[:, 1] = np.pi - alternate[:, 1]
-    alternate[:, 2] += np.pi
-    candidates = np.stack((angles, alternate))
-    candidates += 2 * np.pi * np.round((reference - candidates) / (2 * np.pi))
-    choice = np.argmin(np.sum((candidates - reference)**2, axis=-1), axis=0)
-    return candidates[choice, np.arange(reference.shape[0])]
-
-
 def euler_rotvec_jacobian(
     angles: np.ndarray, order: str, local_rotations: np.ndarray, corrections: np.ndarray
 ) -> np.ndarray:
@@ -209,6 +213,7 @@ def retarget_motion_spacetime(
     control_point_spacing: int = 4,
     control_weight: float = 1.0e-3,
     parameter_weights: np.ndarray | Sequence[float] | None = None,
+    constraint_tolerance: float = DEFAULT_CONSTRAINT_TOLERANCE,
     smoothing_sigma: float = 1.0,
     max_nfev: int | None = None,
     ftol: float = 1.0e-6,
@@ -243,9 +248,25 @@ def retarget_motion_spacetime(
     ``{"type": "joint_limit", "joint": str, "frames": array_like,
     "minimum": array_like, "maximum": array_like, "weight": float}``
 
+    ``{"type": "relational", "joint_a": str, "joint_b": str,
+    "frames": array_like, "source_normalized_distance": array_like,
+    "target_path_length": float, "activation": array_like, "weight": float}``
+
     position and stationary accept axes as a nonempty XYZ-ordered subset.
     Position targets may contain full XYZ or only selected coordinates. Only
     selected coordinates contribute to root centering, residuals and Jacobians.
+
+    For position, stationary, and floor constraints without an explicit
+    ``weight``, the solver uses ``1 / (constraint_tolerance * scale)**2``.
+    The default tolerance is 5 mm in source length units and is scaled into
+    target units with the resolved root scale. An explicit ``weight`` always
+    takes precedence. Joint-limit residuals remain in degrees and retain their
+    existing default weight of 1.0.
+
+    A relational residual is the distance between the two target joint origins,
+    normalized by their target rest-pose kinematic path length, minus the
+    supplied source-normalized distance. ``activation`` defaults to 1.0 and
+    scales both this residual and its analytic Jacobian.
 
     The result is SciPy's :class:`~scipy.optimize.OptimizeResult` with extra
     attributes: ``document``, ``motion_values``, ``initial_motion_values``,
@@ -258,6 +279,8 @@ def retarget_motion_spacetime(
         raise ValueError("control_point_spacing must be positive.")
     if not np.isfinite(control_weight) or control_weight < 0.0:
         raise ValueError("control_weight cannot be negative.")
+    if not np.isfinite(constraint_tolerance) or constraint_tolerance <= 0.0:
+        raise ValueError("constraint_tolerance must be finite and positive.")
     if len(source_document.joints) != len(target_document.joints):
         raise ValueError("Source and target skeletons have different joint counts.")
     if source_document.total_channels != target_document.total_channels:
@@ -317,6 +340,20 @@ def retarget_motion_spacetime(
         raise ValueError("Source motion must contain finite values.")
     if not np.isfinite(resolved_scale) or resolved_scale <= 0:
         raise ValueError("scale must be finite and positive.")
+    scaled_constraint_tolerance = float(constraint_tolerance) * resolved_scale
+    default_spatial_weight = 1.0 / scaled_constraint_tolerance**2
+    constraints = tuple(
+        {
+            **constraint,
+            **(
+                {"weight": default_spatial_weight}
+                if "weight" not in constraint
+                and constraint.get("type") in ("position", "stationary", "floor")
+                else {}
+            ),
+        }
+        for constraint in constraints
+    )
     for channel_index in root_position_channels.values():
         initial_motion[:, channel_index] *= resolved_scale
 
@@ -424,11 +461,30 @@ def retarget_motion_spacetime(
             raise ValueError(f"Duplicate constraint name: {name!r}.")
         names.add(name)
         spec["name"] = name
-        spec["joint_index"] = target_document.joint_index[str(spec["joint"])]
         spec["frames"] = np.asarray(spec["frames"], dtype=int).reshape(-1)
         spec["weight"] = float(spec.get("weight", 1))
         if not np.isfinite(spec["weight"]):
             raise ValueError("Constraint weights must be finite.")
+        if spec["type"] == "relational":
+            for field in ("joint_a", "joint_b"):
+                joint_name = str(spec[field])
+                if joint_name not in target_document.joint_index:
+                    raise ValueError(f"{name}: unknown {field} {joint_name!r}.")
+                spec[field + "_index"] = target_document.joint_index[joint_name]
+            values = np.asarray(spec["source_normalized_distance"], dtype=float)
+            spec["source_normalized_distance"] = np.broadcast_to(values, spec["frames"].shape)
+            spec["activation"] = np.broadcast_to(
+                np.asarray(spec.get("activation", 1.0), dtype=float), spec["frames"].shape
+            )
+            spec["target_path_length"] = float(spec["target_path_length"])
+            if (not np.all(np.isfinite(spec["source_normalized_distance"]))
+                    or not np.all(np.isfinite(spec["activation"]))
+                    or np.any(spec["activation"] < 0)
+                    or not np.isfinite(spec["target_path_length"])
+                    or spec["target_path_length"] <= 0):
+                raise ValueError(f"{name}: relational inputs must be finite and valid.")
+        else:
+            spec["joint_index"] = target_document.joint_index[str(spec["joint"])]
         if spec["type"] in ("position", "stationary"):
             spec["axes"] = spec.get("axes", "XYZ")
             spec["coordinates"] = _coordinate_indices(spec["axes"])
@@ -481,7 +537,7 @@ def retarget_motion_spacetime(
         jacobians = [regularization_jac]
         position_derivatives = {}
         for spec in prepared:
-            kind, j, frames = spec["type"], spec["joint_index"], spec["frames"]
+            kind, frames = spec["type"], spec["frames"]
             weight = spec["weight"]
             if weight == 0:
                 # Retain declared residual rows without evaluating singular Euler charts.
@@ -489,10 +545,37 @@ def retarget_motion_spacetime(
                 if kind == "stationary":
                     count = len(spec["coordinates"]) * (len(frames) - 1)
                 elif kind == "joint_limit":
-                    count = 2 * len(frames) * len(rotation_data[j][0])
+                    count = 2 * len(frames) * len(rotation_data[spec["joint_index"]][0])
                 blocks[spec["name"]] = np.zeros(count)
                 jacobians.append(csr_matrix((count, diagonal.size)))
                 continue
+            if kind == "relational":
+                joint_a, joint_b = spec["joint_a_index"], spec["joint_b_index"]
+                for joint in (joint_a, joint_b):
+                    if joint not in position_derivatives:
+                        position_derivatives[joint] = position_jacobian(
+                            positions, world_axes, joint, variable_joints, translation_mask, parents
+                        )
+                difference = positions[frames, joint_a] - positions[frames, joint_b]
+                distance = np.linalg.norm(difference, axis=1)
+                direction = np.divide(
+                    difference, distance[:, None], out=np.zeros_like(difference), where=distance[:, None] > 1e-12
+                )
+                derivative = np.einsum(
+                    "fi,fid->fd",
+                    direction,
+                    position_derivatives[joint_a][frames] - position_derivatives[joint_b][frames],
+                )
+                scale = np.sqrt(weight * spec["activation"]) / spec["target_path_length"]
+                residual = relational_constraint(
+                    positions, joint_a, joint_b, frames,
+                    spec["source_normalized_distance"], spec["target_path_length"], weight,
+                ) * np.sqrt(spec["activation"])
+                jac = spline_jacobian((scale[:, None] * derivative)[:, None, :], basis[frames])
+                blocks[spec["name"]] = residual
+                jacobians.append(jac)
+                continue
+            j = spec["joint_index"]
             if kind != "joint_limit":
                 if j not in position_derivatives:
                     position_derivatives[j] = position_jacobian(
@@ -526,7 +609,9 @@ def retarget_motion_spacetime(
                     angles = reference[frames] + displacement[frames][:, slots]
                     derivative[:, 0, slots[0]] = 180 / np.pi
                 else:
-                    angles = euler_near_reference(local[frames, j], order, reference[frames])
+                    angles = matrices_to_euler_near_reference(
+                        local[frames, j], order, reference[frames]
+                    )
                     angle_derivative = euler_rotvec_jacobian(
                         angles, order, local[frames, j], corrections[j][frames]
                     )
@@ -582,7 +667,7 @@ def retarget_motion_spacetime(
         if len(slots) == 1:
             angles = reference + displacement[:, slots]
         else:
-            angles = euler_near_reference(local[:, j], order, reference)
+            angles = matrices_to_euler_near_reference(local[:, j], order, reference)
         unchanged = np.all(displacement[:, slots] == 0, axis=1)
         angles[unchanged] = reference[unchanged]
         motion_values[:, channels] = np.where(
@@ -597,6 +682,8 @@ def retarget_motion_spacetime(
     solver_result.constraint_residuals = blocks
     solver_result.scale = resolved_scale
     solver_result.control_point_spacing = control_point_spacing
+    solver_result.constraint_tolerance = scaled_constraint_tolerance
+    solver_result.default_spatial_weight = default_spatial_weight
     solver_result.rotation_parameterization = "right_composed_rotvec_radians"
     parameter_names = [None] * parameter_count
     for slot in np.flatnonzero(translation_mask):
@@ -623,18 +710,35 @@ def _constraint_residuals(
     for constraint_index, constraint in enumerate(constraints):
         constraint_type = str(constraint.get("type", ""))
         name = str(constraint.get("name", f"{constraint_type}_{constraint_index}"))
-        joint_name = str(constraint.get("joint", ""))
-        joint_index = document.joint_index.get(joint_name)
-        if joint_index is None:
-            raise ValueError(
-                f"Constraint {name!r} references unknown joint {joint_name!r}."
-            )
         frames = np.asarray(constraint["frames"], dtype=np.int64).reshape(-1)
         if frames.size == 0 or np.any((frames < 0) | (frames >= motion_values.shape[0])):
             raise ValueError(f"Constraint {name!r} has invalid frames.")
         weight = float(constraint.get("weight", 1.0))
         if not np.isfinite(weight) or weight < 0.0:
             raise ValueError(f"Constraint {name!r} must have a finite nonnegative weight.")
+        if constraint_type == "relational":
+            joint_a = document.joint_index.get(str(constraint.get("joint_a", "")))
+            joint_b = document.joint_index.get(str(constraint.get("joint_b", "")))
+            if joint_a is None or joint_b is None:
+                raise ValueError(f"Relational constraint {name!r} references an unknown endpoint.")
+            source_distance = np.broadcast_to(
+                np.asarray(constraint["source_normalized_distance"], dtype=float), frames.shape
+            )
+            activation = np.broadcast_to(np.asarray(constraint.get("activation", 1.0), dtype=float), frames.shape)
+            length = float(constraint["target_path_length"])
+            if (not np.all(np.isfinite(source_distance)) or not np.all(np.isfinite(activation))
+                    or np.any(activation < 0) or not np.isfinite(length) or length <= 0):
+                raise ValueError(f"Relational constraint {name!r} has invalid inputs.")
+            residuals[name] = relational_constraint(
+                global_positions, joint_a, joint_b, frames, source_distance, length, weight
+            ) * np.sqrt(activation)
+            continue
+        joint_name = str(constraint.get("joint", ""))
+        joint_index = document.joint_index.get(joint_name)
+        if joint_index is None:
+            raise ValueError(
+                f"Constraint {name!r} references unknown joint {joint_name!r}."
+            )
 
         if constraint_type == "position":
             residuals[name] = position_constraint(
@@ -695,6 +799,30 @@ def _constraint_residuals(
         else:
             raise ValueError(
                 f"Unsupported constraint type {constraint_type!r}. Expected one of: "
-                "'position', 'floor', 'stationary', 'joint_limit'."
+                "'position', 'floor', 'stationary', 'joint_limit', 'relational'."
             )
     return residuals
+
+
+def solve_motion_spacetime(
+    reference_document: BVHDocument,
+    constraints: Sequence[Mapping[str, object]],
+    **solver_options,
+) -> OptimizeResult:
+    """Optimize an already projected target reference motion.
+
+    ``reference_document`` is both the initial motion and target skeleton, so
+    this entry point has no equal-topology source requirement. It deliberately
+    keeps all residual evaluation and sparse optimization in
+    :func:`retarget_motion_spacetime`.
+    """
+
+    if "scale" in solver_options:
+        raise ValueError("solve_motion_spacetime uses target-space reference motion; omit scale.")
+    return retarget_motion_spacetime(
+        reference_document,
+        reference_document,
+        constraints,
+        scale=1.0,
+        **solver_options,
+    )

@@ -1,6 +1,7 @@
 """Rotation transfer helpers for FK BVH retargeting."""
 
 import numpy as np
+import warnings
 from scipy.spatial.transform import Rotation
 
 from broom.bvh.interpolation.utils import wrap_degrees
@@ -125,6 +126,26 @@ def unwrap_euler_degrees(angles: np.ndarray) -> np.ndarray:
         return angles.copy()
     radians = np.deg2rad(angles)
     return np.rad2deg(np.unwrap(radians, axis=0))
+
+
+def matrices_to_euler_near_reference(
+    matrices: np.ndarray,
+    order: str,
+    reference: np.ndarray,
+) -> np.ndarray:
+    """Decode Euler matrices on the per-frame branch nearest ``reference``."""
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Gimbal lock detected")
+        angles = Rotation.from_matrix(matrices).as_euler(order)
+    alternate = angles.copy()
+    alternate[:, 0] += np.pi
+    alternate[:, 1] = np.pi - alternate[:, 1]
+    alternate[:, 2] += np.pi
+    candidates = np.stack((angles, alternate))
+    candidates += 2 * np.pi * np.round((reference - candidates) / (2 * np.pi))
+    choice = np.argmin(np.sum((candidates - reference) ** 2, axis=-1), axis=0)
+    return candidates[choice, np.arange(reference.shape[0])]
 
 
 def estimate_rest_frames(document: BVHDocument) -> np.ndarray:
