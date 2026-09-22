@@ -27,22 +27,9 @@ test = [
     "pytest",
 ]
 
-[tool.setuptools]
-packages = [
-    "broom",
-    "broom.bvh",
-    "broom.bvh.analysis",
-    "broom.bvh.filtering",
-    "broom.bvh.in_place",
-    "broom.bvh.interpolation",
-    "broom.bvh.ops",
-    "broom.bvh.render",
-    "broom.bvh.retargeting",
-    "broom.bvh.rotations",
-]
-
-[tool.setuptools.package-dir]
-broom = "."
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["broom*"]
 
 [tool.setuptools.package-data]
 "broom.bvh" = ["data/*.json"]
