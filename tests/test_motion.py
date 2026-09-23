@@ -37,8 +37,10 @@ def test_shape_timing_and_finite_policy(hierarchy):
         Motion(hierarchy, np.zeros((1, 3)), 0)
     with pytest.raises(ValueError):
         Motion(hierarchy, np.zeros((1, 3)), None)
-    motion = Motion(hierarchy, np.array([[np.nan, 0.0, 0.0]]), 0.1)
-    assert np.isnan(motion.values[0, 0])
+    with pytest.raises(ValueError, match="finite"):
+        Motion(hierarchy, np.array([[np.nan, 0.0, 0.0]]), 0.1)
+    with pytest.raises(ValueError, match="finite"):
+        Motion(hierarchy, np.array([[np.inf, 0.0, 0.0]]), 0.1)
     with pytest.raises(ValueError):
         Motion(hierarchy, np.empty((0, 3)), 0.1)
     with pytest.raises(ValueError):

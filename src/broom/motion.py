@@ -16,6 +16,8 @@ def _owned_values(values: Any, hierarchy: Hierarchy) -> np.ndarray:
         )
     if array.shape[0] == 0:
         raise ValueError("Motion values must contain at least one frame.")
+    if not np.isfinite(array).all():
+        raise ValueError("Motion values must contain only finite values.")
     return np.array(array, dtype=np.float64, copy=True, order="C")
 
 

@@ -1,4 +1,4 @@
-"""I/O helpers for loading and writing BVH documents."""
+"""Load and write BVH motions."""
 
 from __future__ import annotations
 
@@ -13,42 +13,40 @@ from broom.hierarchy import Hierarchy, Joint
 from broom.motion import Motion
 
 
-def _find_motion_index(lines: Sequence[str], motion_name: str) -> int:
-    """Return the line index of the MOTION section."""
-    for index, line in enumerate(lines):
-        if line.strip().upper() == motion_name.upper():
-            return index
-    raise ValueError(f"BVH file does not contain a {motion_name} section.")
+def _parse_finite_float(token: str, *, context: str) -> float:
+    """Parse one finite BVH number."""
+    try:
+        value = float(token)
+    except ValueError as error:
+        raise ValueError(f"{context} must be a finite number, got {token!r}.") from error
+    if not np.isfinite(value):
+        raise ValueError(f"{context} must be finite, got {token!r}.")
+    return value
 
 
-def _find_motion_data_start(lines: Sequence[str], motion_index: int) -> int:
-    """Return the first motion-data line index."""
-    for index in range(motion_index + 1, len(lines)):
-        if re.match(r"^\s*Frame\s+Time\s*:", lines[index], flags=re.IGNORECASE):
-            return index + 1
-    raise ValueError("BVH MOTION section does not contain a Frame Time line.")
+def _parse_offset(line: str, *, context: str) -> tuple[float, float, float]:
+    """Parse an OFFSET declaration with exactly three values."""
+    tokens = line.split()
+    if len(tokens) != 4 or tokens[0] != "OFFSET":
+        raise ValueError("BVH OFFSET must contain exactly three numeric components.")
+    return tuple(
+        _parse_finite_float(token, context=f"{context} OFFSET") for token in tokens[1:]
+    )  # type: ignore[return-value]
 
 
-def _extract_frame_count(lines: Sequence[str]) -> int | None:
-    """Return the declared BVH frame count."""
-    for line in lines:
-        match = re.match(r"^\s*Frames\s*:\s*(\d+)\s*$", line)
-        if match:
-            return int(match.group(1))
-    return None
-
-
-def _extract_frame_time(lines: Sequence[str]) -> float | None:
-    """Return the declared BVH frame duration."""
-    for line in lines:
-        match = re.match(r"^\s*Frame\s+Time\s*:\s*([-\d.eE]+)\s*$", line)
-        if match:
-            return float(match.group(1))
-    return None
+def _normalise_joint_name(name: str) -> str:
+    """Normalise whitespace in a BVH joint name with an explicit notice."""
+    normalised = re.sub(r"\s+", "_", name)
+    if normalised != name:
+        print(
+            f"Renamed BVH joint {name!r} to {normalised!r} to improve "
+            "compatibility with BVH readers."
+        )
+    return normalised
 
 
 def _parse_hierarchy(lines: Sequence[str]) -> Hierarchy:
-    """Parse BVH hierarchy text into a Hierarchy."""
+    """Parse a strict BVH hierarchy into a Hierarchy."""
     joints: list[Joint] = []
     stack: list[int | None] = []
     end_site_parents: list[int] = []
@@ -57,58 +55,37 @@ def _parse_hierarchy(lines: Sequence[str]) -> Hierarchy:
     offset_joints: set[int] = set()
     channel_joints: set[int] = set()
     end_site_offsets: set[int] = set()
-
-    def normalize_name(name: str) -> str:
-        normalized = re.sub(r"\s+", "_", name)
-        if normalized != name:
-            print(
-                f"Renamed BVH joint {name!r} to {normalized!r} to improve "
-                "compatibility with common BVH readers."
-            )
-        return normalized
+    hierarchy_seen = False
 
     def active_joint() -> int:
-        for index in reversed(stack):
-            if index is not None:
-                return index
-        return -1
+        if not stack or stack[-1] is None:
+            return -1
+        return stack[-1]
 
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped == "HIERARCHY":
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped:
             continue
-        match = re.match(r"^(ROOT|JOINT)\s+(.+?)\s*$", stripped)
-        if match:
-            kind, name = match.groups()
-            if (kind == "ROOT" and joints) or (kind == "JOINT" and not joints):
-                raise ValueError(
-                    "BVH hierarchy must start with one ROOT followed by JOINT entries."
-                )
-            parent = active_joint()
-            name = normalize_name(name)
-            if any(joint.name == name for joint in joints):
-                raise ValueError(
-                    f"BVH joint name {name!r} is not unique after normalization."
-                )
-            pending_joint = len(joints)
-            joints.append(Joint(name, parent, (0.0, 0.0, 0.0)))
+        if not hierarchy_seen:
+            if stripped != "HIERARCHY":
+                raise ValueError("BVH hierarchy must begin with HIERARCHY.")
+            hierarchy_seen = True
             continue
-        if stripped == "End Site":
-            pending_end_site_parent = active_joint()
-            if pending_end_site_parent == -1:
-                raise ValueError("BVH End Site must belong to a joint.")
-            continue
-        if stripped == "{":
+        if stripped == "HIERARCHY":
+            raise ValueError("BVH hierarchy may declare HIERARCHY only once.")
+        if pending_joint is not None or pending_end_site_parent is not None:
+            if stripped != "{":
+                raise ValueError("BVH joint and End Site declarations must be followed by {.")
             if pending_joint is not None:
                 stack.append(pending_joint)
                 pending_joint = None
-            elif pending_end_site_parent is not None:
-                stack.append(None)
-                end_site_parents.append(pending_end_site_parent)
-                pending_end_site_parent = None
             else:
-                raise ValueError("Unexpected opening brace in BVH hierarchy.")
+                stack.append(None)
+                end_site_parents.append(pending_end_site_parent)  # type: ignore[arg-type]
+                pending_end_site_parent = None
             continue
+        if stripped == "{":
+            raise ValueError("Unexpected opening brace in BVH hierarchy.")
         if stripped == "}":
             if not stack:
                 raise ValueError("Unexpected closing brace in BVH hierarchy.")
@@ -120,18 +97,41 @@ def _parse_hierarchy(lines: Sequence[str]) -> Hierarchy:
                         f"End Site for joint {joints[parent].name!r} has no OFFSET."
                     )
             continue
+
+        declaration = stripped.split(maxsplit=1)
+        keyword = declaration[0]
         active = active_joint()
-        if active == -1:
+        if keyword in ("ROOT", "JOINT"):
+            if len(declaration) != 2 or not declaration[1].strip():
+                raise ValueError(f"BVH {keyword} declaration requires a joint name.")
+            if keyword == "ROOT":
+                if joints or stack:
+                    raise ValueError("BVH hierarchy must declare exactly one root first.")
+                parent = -1
+            else:
+                if not joints or active == -1:
+                    raise ValueError("BVH JOINT must be declared inside a joint block.")
+                parent = active
+            name = _normalise_joint_name(declaration[1])
+            if any(joint.name == name for joint in joints):
+                raise ValueError(
+                    f"BVH joint name {name!r} is not unique after normalization."
+                )
+            pending_joint = len(joints)
+            joints.append(Joint(name, parent, (0.0, 0.0, 0.0)))
             continue
-        offset_match = re.match(
-            r"^OFFSET\s+([-\d.eE]+)\s+([-\d.eE]+)\s+([-\d.eE]+)\s*$",
-            stripped,
-        )
-        if offset_match:
-            offset = tuple(float(value) for value in offset_match.groups())
-            if stack and stack[-1] is None:
+        if stripped == "End Site":
+            if active == -1:
+                raise ValueError("BVH End Site must belong to a joint.")
+            pending_end_site_parent = active
+            continue
+        if keyword == "OFFSET":
+            if not stack:
+                raise ValueError("BVH OFFSET must belong to a joint or End Site.")
+            offset = _parse_offset(stripped, context="BVH")
+            if stack[-1] is None:
                 parent = end_site_parents[-1]
-                if joints[parent].end_site_offset is not None:
+                if parent in end_site_offsets:
                     raise ValueError("A BVH joint may declare only one End Site.")
                 joints[parent] = replace(joints[parent], end_site_offset=offset)
                 end_site_offsets.add(parent)
@@ -143,25 +143,32 @@ def _parse_hierarchy(lines: Sequence[str]) -> Hierarchy:
                 joints[active] = replace(joints[active], offset=offset)
                 offset_joints.add(active)
             continue
-        if stripped.startswith("OFFSET"):
-            raise ValueError(
-                "BVH OFFSET must contain exactly three numeric components."
-            )
-        channel_match = re.match(r"^CHANNELS\s+(\d+)\s+(.+?)\s*$", stripped)
-        if channel_match:
+        if keyword == "CHANNELS":
+            if active == -1 or stack[-1] is None:
+                raise ValueError("BVH CHANNELS must belong to a joint.")
+            if active not in offset_joints:
+                raise ValueError("BVH CHANNELS must follow its joint OFFSET.")
             if active in channel_joints:
                 raise ValueError(
                     f"Joint {joints[active].name!r} declares CHANNELS more than once."
                 )
-            count = int(channel_match.group(1))
-            channels = tuple(channel_match.group(2).split())
+            tokens = stripped.split()
+            if len(tokens) < 2 or not tokens[1].isdigit():
+                raise ValueError("BVH CHANNELS requires a non-negative integer count.")
+            count = int(tokens[1])
+            channels = tuple(tokens[2:])
             if len(channels) != count:
                 raise ValueError(
-                    f"Joint '{joints[active].name}' declares {count} channels, "
+                    f"Joint {joints[active].name!r} declares {count} channels, "
                     f"but {len(channels)} names were found."
                 )
             joints[active] = replace(joints[active], channels=channels)
             channel_joints.add(active)
+            continue
+        raise ValueError(f"Unknown or misplaced BVH hierarchy declaration: {stripped!r}.")
+
+    if not hierarchy_seen:
+        raise ValueError("BVH hierarchy must begin with HIERARCHY.")
     if stack or pending_joint is not None or pending_end_site_parent is not None:
         raise ValueError("BVH hierarchy has unclosed or incomplete blocks.")
     if not joints:
@@ -171,6 +178,13 @@ def _parse_hierarchy(lines: Sequence[str]) -> Hierarchy:
     ]
     if missing_offsets:
         raise ValueError(f"BVH joints without OFFSET: {', '.join(missing_offsets)}.")
+    missing_channels = [
+        joint.name for index, joint in enumerate(joints) if index not in channel_joints
+    ]
+    if missing_channels:
+        raise ValueError(
+            f"BVH joints without CHANNELS: {', '.join(missing_channels)}."
+        )
     hierarchy = Hierarchy(tuple(joints))
     # TODO: Verify whether a zero-length End Site is the right fallback for every BVH consumer.
     completed_joints = []
@@ -185,6 +199,42 @@ def _parse_hierarchy(lines: Sequence[str]) -> Hierarchy:
     return Hierarchy(tuple(completed_joints))
 
 
+def _find_motion_index(lines: Sequence[str], motion_name: str) -> int:
+    """Return the unique MOTION section line index."""
+    matches = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip().upper() == motion_name.upper()
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"BVH file must contain exactly one {motion_name} section.")
+    return matches[0]
+
+
+def _parse_motion_header(lines: Sequence[str], motion_index: int) -> tuple[int, float, int]:
+    """Parse required Frames and Frame Time declarations."""
+    nonempty = [
+        (index, line.strip())
+        for index, line in enumerate(lines[motion_index + 1 :], start=motion_index + 1)
+        if line.strip()
+    ]
+    if len(nonempty) < 2:
+        raise ValueError("BVH MOTION section requires Frames and Frame Time headers.")
+    frame_index, frames_line = nonempty[0]
+    time_index, time_line = nonempty[1]
+    frame_match = re.fullmatch(r"Frames\s*:\s*(\d+)", frames_line)
+    if frame_match is None:
+        raise ValueError("BVH MOTION section must begin with a Frames header.")
+    frame_count = int(frame_match.group(1))
+    time_match = re.fullmatch(r"Frame\s+Time\s*:\s*(\S+)", time_line, flags=re.IGNORECASE)
+    if time_match is None:
+        raise ValueError("BVH MOTION section must contain one Frame Time header.")
+    frame_time = _parse_finite_float(time_match.group(1), context="BVH Frame Time")
+    if frame_time <= 0:
+        raise ValueError("BVH Frame Time must be positive.")
+    return frame_count, frame_time, time_index + 1
+
+
 def _read_motion_values(lines: Sequence[str], total_channels: int) -> np.ndarray:
     """Parse numeric BVH motion rows."""
     values = []
@@ -197,11 +247,10 @@ def _read_motion_values(lines: Sequence[str], total_channels: int) -> np.ndarray
                 f"Motion row has {len(tokens)} values, but hierarchy declares "
                 f"{total_channels} channels."
             )
-        numeric = np.asarray(tokens, dtype=np.float64)
-        if not np.isfinite(numeric).all():
-            raise ValueError(
-                f"Motion row {len(values)} contains NaN or infinite values."
-            )
+        numeric = np.asarray(
+            [_parse_finite_float(token, context="BVH motion value") for token in tokens],
+            dtype=np.float64,
+        )
         values.append(numeric)
     return (
         np.empty((0, total_channels), dtype=np.float64)
@@ -219,19 +268,19 @@ def _read_motion_from_lines(
     hierarchy = _parse_hierarchy(lines[:motion_index])
     if root_name is not None and hierarchy.root_name != root_name:
         raise ValueError(
-            f"Expected root joint '{root_name}', got '{hierarchy.root_name}'."
+            f"Expected root joint {root_name!r}, got {hierarchy.root_name!r}."
         )
-    data_start_index = _find_motion_data_start(lines, motion_index)
+    declared_frames, frame_time, data_start_index = _parse_motion_header(
+        lines, motion_index
+    )
     values = _read_motion_values(lines[data_start_index:], hierarchy.total_channels)
     if values.shape[0] == 0:
         raise ValueError("No motion frames found in BVH document.")
-    header = lines[motion_index:data_start_index]
-    declared_frames = _extract_frame_count(header)
-    if declared_frames is not None and declared_frames != values.shape[0]:
+    if declared_frames != values.shape[0]:
         raise ValueError(
             f"BVH declares {declared_frames} frames but contains {values.shape[0]}."
         )
-    return Motion(hierarchy, values, _extract_frame_time(header))
+    return Motion(hierarchy, values, frame_time)
 
 
 def load_bvh(
@@ -277,23 +326,20 @@ def load_bvh_from_bytes(
 def _serialize_joint(
     hierarchy: Hierarchy, index: int, indent: str, precision: int
 ) -> list[str]:
-    """Serialize one joint and its descendants."""
+    """Serialize one joint and its descendants in DFS order."""
     joint = hierarchy.joints[index]
     label = "ROOT" if joint.parent == -1 else "JOINT"
     lines = [f"{indent}{label} {joint.name}\n", f"{indent}{{\n"]
+    offset = " ".join(f"{value:.{precision}f}" for value in joint.offset)
+    lines.append(f"{indent}    OFFSET {offset}\n")
+    channels = " ".join(joint.channels)
     lines.append(
-        f"{indent}    OFFSET {' '.join(f'{value:.{precision}f}' for value in joint.offset)}\n"
+        f"{indent}    CHANNELS {len(joint.channels)}"
+        f"{f' {channels}' if channels else ''}\n"
     )
-    if joint.channels:
-        lines.append(
-            f"{indent}    CHANNELS {len(joint.channels)} {' '.join(joint.channels)}\n"
-        )
-    children = hierarchy.children(index)
-    for child_index in children:
-        lines.extend(
-            _serialize_joint(hierarchy, child_index, indent + "    ", precision)
-        )
-    if joint.end_site_offset is not None or not children:
+    for child_index in hierarchy.children(index):
+        lines.extend(_serialize_joint(hierarchy, child_index, indent + "    ", precision))
+    if joint.end_site_offset is not None or not hierarchy.children(index):
         # TODO: Verify whether a zero-length End Site is the right fallback for every BVH consumer.
         if joint.end_site_offset is None:
             print(
@@ -301,12 +347,14 @@ def _serialize_joint(
                 "the Hierarchy did not define one."
             )
         end_site_offset = joint.end_site_offset or (0.0, 0.0, 0.0)
-        offset = " ".join(f"{value:.{precision}f}" for value in end_site_offset)
+        end_offset = " ".join(
+            f"{value:.{precision}f}" for value in end_site_offset
+        )
         lines.extend(
             (
                 f"{indent}    End Site\n",
                 f"{indent}    {{\n",
-                f"{indent}        OFFSET {offset}\n",
+                f"{indent}        OFFSET {end_offset}\n",
                 f"{indent}    }}\n",
             )
         )
@@ -314,12 +362,52 @@ def _serialize_joint(
     return lines
 
 
-def write_bvh(motion: Motion, output_path: str | Path, precision: int = 8) -> None:
-    """Write a Motion as a BVH file."""
+def _dfs_joint_indices(hierarchy: Hierarchy, index: int) -> tuple[int, ...]:
+    """Return hierarchy joint indices in BVH serialization order."""
+    indices = [index]
+    for child_index in hierarchy.children(index):
+        indices.extend(_dfs_joint_indices(hierarchy, child_index))
+    return tuple(indices)
+
+
+def _export_values_in_dfs_order(motion: Motion) -> np.ndarray:
+    """Return temporary motion rows aligned with the serialized hierarchy."""
+    column_indices = []
+    for index in _dfs_joint_indices(motion.hierarchy, motion.hierarchy.root):
+        start = motion.hierarchy.channel_start(index)
+        column_indices.extend(range(start, start + motion.hierarchy.channel_count(index)))
+    return motion.values[:, column_indices]
+
+
+def _format_frame_time(value: float, precision: int) -> str:
+    """Format a positive frame duration without scientific notation."""
+    formatted = f"{value:.{precision}f}"
+    if float(formatted) > 0:
+        return formatted
+    return np.format_float_positional(value, unique=True, trim="-")
+
+
+def write_bvh(
+    motion: Motion,
+    output_path: str | Path,
+    precision: int = 8,
+    frame_time_precision: int = 8,
+) -> None:
+    """Write a Motion as canonical DFS-ordered BVH.
+
+    BVH hierarchy records are emitted in depth-first order. If the in-memory
+    Hierarchy uses another valid parent-before-child order, this function
+    permutes complete joint channel blocks only in temporary export rows. The
+    source Motion and its values are not modified.
+    """
     if not isinstance(motion, Motion):
         raise TypeError("motion must be a Motion.")
-    if isinstance(precision, bool) or not isinstance(precision, int) or precision < 0:
-        raise ValueError("precision must be a non-negative integer.")
+    for name, value in (
+        ("precision", precision),
+        ("frame_time_precision", frame_time_precision),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer.")
     if motion.values.ndim != 2 or motion.values.shape != (
         motion.frame_count,
         motion.hierarchy.total_channels,
@@ -333,18 +421,15 @@ def write_bvh(motion: Motion, output_path: str | Path, precision: int = 8) -> No
     ):
         # TODO: Implement a verified local-orientation basis conversion for BVH output.
         raise NotImplementedError("BVH output does not support local_orientation yet.")
+    export_values = _export_values_in_dfs_order(motion)
     lines = [
         "HIERARCHY\n",
         *_serialize_joint(motion.hierarchy, motion.hierarchy.root, "", precision),
+        "MOTION\n",
+        f"Frames: {motion.frame_count}\n",
+        f"Frame Time: {_format_frame_time(motion.frame_time, frame_time_precision)}\n",
     ]
-    lines.extend(
-        (
-            "MOTION\n",
-            f"Frames: {motion.frame_count}\n",
-            f"Frame Time: {motion.frame_time:.{precision}f}\n",
-        )
-    )
-    for frame in motion.values:
+    for frame in export_values:
         lines.append(" ".join(f"{value:.{precision}f}" for value in frame) + "\n")
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
