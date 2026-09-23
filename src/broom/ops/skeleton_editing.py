@@ -1,14 +1,19 @@
-"""Skeleton hierarchy helpers derived from BVH rest-pose offsets."""
+"""Skeleton hierarchy editing operations and legacy skeleton helpers."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from broom.bvh.io import validate_motion_values
-from broom.bvh.schemas import BVHDocument, BVHJoint
+from broom.hierarchy import Hierarchy
+
+if TYPE_CHECKING:
+    from broom.bvh.schemas import BVHDocument, BVHJoint
+
 
 DEFAULT_HIPS_NAMES = (
     "hips",
@@ -17,7 +22,7 @@ DEFAULT_HIPS_NAMES = (
     "root",
 )
 
-
+# TODO: consider moving this function to a property of the class
 def skeleton_tree(
     skeleton: BVHDocument | Sequence[BVHJoint],
     *,
@@ -25,13 +30,10 @@ def skeleton_tree(
     show_offsets: bool = False,
     max_depth: int | None = None,
 ) -> str:
-    """Return the skeleton hierarchy formatted as an ASCII tree."""
+    """Return the legacy BVH skeleton hierarchy formatted as an ASCII tree."""
+    from broom.bvh.schemas import BVHDocument
 
-    joints = (
-        skeleton.joints
-        if isinstance(skeleton, BVHDocument)
-        else tuple(skeleton)
-    )
+    joints = skeleton.joints if isinstance(skeleton, BVHDocument) else tuple(skeleton)
     if not joints:
         return ""
 
@@ -84,10 +86,9 @@ def skeleton_tree(
             )
     return "\n".join(lines)
 
-
+# TODO: consider moving this function to kinematics or class property
 def compute_rest_joint_positions(joints: Sequence[BVHJoint]) -> np.ndarray:
     """Return global rest-pose joint positions reconstructed from offsets."""
-
     positions = np.zeros((len(joints), 3), dtype=np.float64)
     for index, joint in enumerate(joints):
         if joint.parent == -1:
@@ -97,71 +98,54 @@ def compute_rest_joint_positions(joints: Sequence[BVHJoint]) -> np.ndarray:
     return positions
 
 
-def scale_skeleton(
-    document: BVHDocument,
-    scale: float,
-    *,
-    scale_position_channels: bool = True,
-) -> BVHDocument:
-    """Return a document with skeleton offsets scaled by ``scale``.
+def scale_offsets(hierarchy: Hierarchy, factor: float) -> Hierarchy:
+    """Return a hierarchy with rest offsets scaled by ``factor``.
 
-    By default all position channels are scaled too, which keeps the motion
-    consistent with the resized skeleton.
+    Joint offsets, including the root offset, and End Site offsets are scaled
+    relative to the skeleton origin. Topology, channel declarations, names and
+    local orientations are preserved.
     """
-
-    scale = float(scale)
-    if scale <= 0.0:
-        raise ValueError("scale must be positive.")
-    if np.isclose(scale, 1.0):
-        return document
+    if not isinstance(hierarchy, Hierarchy):
+        raise TypeError("hierarchy must be a Hierarchy.")
+    if isinstance(factor, bool):
+        raise ValueError("factor must be a finite positive number.")
+    try:
+        scale = float(factor)
+    except (TypeError, ValueError) as error:
+        raise ValueError("factor must be a finite positive number.") from error
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError("factor must be a finite positive number.")
 
     joints = tuple(
         replace(
             joint,
-            offset=np.asarray(joint.offset, dtype=np.float64) * scale,
+            offset=tuple(scale * value for value in joint.offset),
+            end_site_offset=(
+                None
+                if joint.end_site_offset is None
+                else tuple(scale * value for value in joint.end_site_offset)
+            ),
         )
-        for joint in document.joints
+        for joint in hierarchy.joints
     )
-    motion_values = document.motion_values.copy()
-    if scale_position_channels and motion_values.size > 0:
-        indices = _position_channel_indices(document)
-        if indices:
-            motion_values[:, indices] *= scale
-
-    values = validate_motion_values(document=document, motion_values=motion_values)
-    return BVHDocument(
-        path=document.path,
-        prefix_lines=document.prefix_lines,
-        motion_rows=tuple(),
-        motion_values=values,
-        joints=joints,
-        total_channels=document.total_channels,
-        root_name=document.root_name,
-        root_channels=document.root_channels,
-        frame_time=document.frame_time,
-        declared_frames=values.shape[0],
-    )
+    return Hierarchy(joints)
 
 
+# TODO: consifer moving thie function to a property of the class
 def estimate_skeleton_height(joints: Sequence[BVHJoint]) -> float:
     """Estimate rest-pose skeleton height as Y-axis span."""
-
     if not joints:
         return 0.0
-
     positions = compute_rest_joint_positions(joints)
     return max(float(np.ptp(positions[:, 1])), 1.0e-6)
 
-
+# TODO: consifer moving thie function to a property of the class
 def estimate_hips_height(
-    joints: Sequence[BVHJoint],
-    hips_name: str | None = None,
+    joints: Sequence[BVHJoint], hips_name: str | None = None
 ) -> float:
     """Estimate hips height above the lowest rest-pose point along Y."""
-
     if not joints:
         return 0.0
-
     positions = compute_rest_joint_positions(joints)
     hips_index = find_hips_joint_index(joints, hips_name=hips_name)
     floor_y = float(positions[:, 1].min())
@@ -169,12 +153,11 @@ def estimate_hips_height(
     return max(hips_y - floor_y, 1.0e-6)
 
 
+# TODO: check if we really need this function
 def find_hips_joint_index(
-    joints: Sequence[BVHJoint],
-    hips_name: str | None = None,
+    joints: Sequence[BVHJoint], hips_name: str | None = None
 ) -> int:
-    """Return the hierarchy index of the hips/pelvis joint."""
-
+    """Return the legacy hierarchy index of the hips or pelvis joint."""
     if not joints:
         raise ValueError("Cannot find hips joint in an empty skeleton.")
     
@@ -200,14 +183,4 @@ def find_hips_joint_index(
         for index, joint_name in enumerate(joint_names):
             if candidate_normalized in joint_name:
                 return index
-
     return 0
-
-
-def _position_channel_indices(document: BVHDocument) -> list[int]:
-    indices: list[int] = []
-    for joint in document.joints:
-        for offset, channel in enumerate(joint.channels):
-            if channel.endswith("position"):
-                indices.append(joint.channel_start + offset)
-    return indices

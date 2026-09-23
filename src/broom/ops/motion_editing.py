@@ -1,9 +1,10 @@
-"""Basic BVH motion editing operations."""
+"""Motion editing operations and legacy BVH motion helpers."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
 import numpy as np
 
 from broom.bvh.interpolation.utils import (
@@ -14,37 +15,43 @@ from broom.bvh.io import validate_motion_values
 from broom.bvh.schemas import BVHDocument
 
 
+def scale_skeleton(motion: Motion, factor: float) -> Motion:
+    """Return a motion with its offsets and translation channels scaled.
+
+    The returned Motion scales joint and End Site offsets and every
+    ``Xposition``, ``Yposition`` and ``Zposition`` channel, including
+    non-root joints. Rotation channels and frame time are preserved.
+    """
+    if not isinstance(motion, Motion):
+        raise TypeError("motion must be a Motion.")
+
+    scaled_hierarchy = scale_offsets(motion.hierarchy, factor)
+    values = motion.values.copy()
+    position_indices = _position_channel_indices(motion.hierarchy)
+    if position_indices:
+        values[:, position_indices] *= float(factor)
+    return Motion(scaled_hierarchy, values, motion.frame_time)
+
+
+# TODO
 def fill_motion(
     document: BVHDocument,
     frame_count: int,
     pose: np.ndarray | Sequence[float] | None = None,
     frame_time: float | None = None,
 ) -> BVHDocument:
-    """Create a document whose motion is filled with one repeated pose.
-
-    If ``pose`` is omitted, the motion is filled with zeros.
-    """
-
+    """Create a legacy document whose motion is filled with one pose."""
     frame_count = int(frame_count)
     if frame_count <= 0:
         raise ValueError("frame_count must be positive.")
-
     if pose is None:
-        motion_values = np.zeros(
-            (frame_count, document.total_channels),
-            dtype=np.float64,
-        )
+        motion_values = np.zeros((frame_count, document.total_channels), dtype=np.float64)
     else:
         pose_values = _single_pose_values(document=document, pose=pose)
         motion_values = np.repeat(pose_values[None, :], frame_count, axis=0)
+    return with_motion_values(document, motion_values, frame_time)
 
-    return with_motion_values(
-        document=document,
-        motion_values=motion_values,
-        frame_time=frame_time,
-    )
-
-
+# TODO
 def trim_frames(
     document: BVHDocument,
     start_frame: Optional[int] = None,
@@ -66,6 +73,7 @@ def trim_frames(
     )
 
 
+# TODO
 def slice_by_time(
     document: BVHDocument,
     start_seconds: float | None = None,
@@ -94,6 +102,7 @@ def slice_by_time(
     )
 
 
+# TODO
 def reverse(
     document: BVHDocument,
     keep_root_start: bool = False,
@@ -109,6 +118,7 @@ def reverse(
     return with_motion_values(document=document, motion_values=motion_values)
 
 
+# TODO
 def zero_origin(
     document: BVHDocument,
     axes: Sequence[str] | None = None,
@@ -125,7 +135,7 @@ def zero_origin(
         motion_values[:, indices] -= motion_values[0, indices]
     return with_motion_values(document=document, motion_values=motion_values)
 
-
+# TODO
 def _root_position_indices_for_axes(
     document: BVHDocument,
     axes: Sequence[str] | None,
@@ -163,7 +173,7 @@ def _root_position_indices_for_axes(
             )
     return indices
 
-
+# TODO
 def _normalize_frame_slice(
     frame_count: int,
     start_frame: Optional[int] = 0,
@@ -181,7 +191,7 @@ def _normalize_frame_slice(
         raise ValueError("Frame slice cannot be empty.")
     return start, end
 
-
+# TODO
 def _require_frame_time(document: BVHDocument) -> float:
     """Return positive frame time or raise a clear error."""
 
@@ -189,7 +199,7 @@ def _require_frame_time(document: BVHDocument) -> float:
         raise ValueError("BVH document does not have a positive frame_time.")
     return float(document.frame_time)
 
-
+# TODO
 def with_motion_values(
     document: BVHDocument,
     motion_values: np.ndarray,
@@ -216,7 +226,7 @@ def with_motion_values(
         declared_frames=values.shape[0],
     )
 
-
+# TODO
 def _single_pose_values(
     document: BVHDocument,
     pose: np.ndarray | Sequence[float],
@@ -245,7 +255,7 @@ def _single_pose_values(
 
     return np.nan_to_num(pose_values, nan=0.0)
 
-
+# TODO
 def _update_prefix_metadata(
     prefix_lines: Sequence[str],
     frame_count: int,
@@ -275,3 +285,13 @@ def _update_prefix_metadata(
     if frame_time is not None and not replaced_frame_time:
         raise ValueError("BVH prefix does not contain a Frame Time header.")
     return tuple(updated)
+
+# TODO: consifer moving this function to property of the class
+def _position_channel_indices(hierarchy: Hierarchy) -> tuple[int, ...]:
+    """Return scalar-table indices of every position channel."""
+    return tuple(
+        hierarchy.channel_start(joint_index) + channel_offset
+        for joint_index, joint in enumerate(hierarchy.joints)
+        for channel_offset, channel in enumerate(joint.channels)
+        if channel.endswith("position")
+    )
