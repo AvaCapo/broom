@@ -249,3 +249,14 @@ def compute_global_transforms(motion: Motion) -> tuple[np.ndarray, np.ndarray]:
     return compute_global_transforms_from_local(
         motion.hierarchy, local_rotations, local_translations
     )
+
+
+def compute_global_positions(motion: Motion) -> np.ndarray:
+    """Decode a Motion and return world-space joint positions.
+
+    This convenience wrapper has the same validation and coordinate
+    conventions as :func:`compute_global_transforms`. The returned float64
+    array has shape ``(F, J, 3)`` in ``motion.hierarchy.joints`` order.
+    """
+    world_positions, _ = compute_global_transforms(motion)
+    return world_positions

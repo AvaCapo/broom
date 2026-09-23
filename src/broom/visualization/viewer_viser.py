@@ -1,4 +1,4 @@
-"""Minimal Viser BVH viewer for one or more skeletons."""
+"""Minimal Viser viewer for one or more skeleton clips."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from typing import Sequence
 
 import numpy as np
 
-from broom.bvh.kinematics import compute_global_positions
-from broom.bvh.schemas import BVHDocument
+from broom.kinematics import compute_global_positions
+from broom.motion import Motion
 
 try:
     import viser
@@ -88,10 +88,9 @@ def _resolve_offsets(offsets: Sequence[Sequence[float]] | Sequence[float] | None
     return resolved
 
 
-def _fps_from_document(document: BVHDocument) -> int:
-    if document.frame_time is None or document.frame_time <= 0.0:
-        return 30
-    return max(1, int(round(1.0 / float(document.frame_time))))
+def _fps_from_motion(motion: Motion) -> float:
+    """Return the exact playback rate declared by a motion."""
+    return 1.0 / motion.frame_time
 
 
 def _resolve_spheres(spheres) -> list[_SphereData]:
@@ -147,7 +146,7 @@ def _parents_from_edges(edges: Sequence[tuple[int, int]], joint_count: int) -> n
 
 
 def _resolve_clip(
-    clip: BVHDocument | np.ndarray,
+    clip: Motion | np.ndarray,
     *,
     offset: np.ndarray,
     label: str,
@@ -156,22 +155,24 @@ def _resolve_clip(
     parents: Sequence[int] | np.ndarray | None,
     fps: int | None,
 ) -> _ClipData:
-    if isinstance(clip, BVHDocument):
-        document = clip
-        joints = compute_global_positions(document).astype(np.float32, copy=False)
-        parents_resolved = np.asarray([joint.parent for joint in document.joints], dtype=np.int64)
+    if isinstance(clip, Motion):
+        hierarchy = clip.hierarchy
+        joints = compute_global_positions(clip).astype(np.float32, copy=False)
+        parents_resolved = np.asarray(
+            [joint.parent for joint in hierarchy.joints], dtype=np.int64
+        )
         return _ClipData(
             joints=joints,
-            names=list(document.joint_names),
+            names=list(hierarchy.joint_names),
             edges=_edges_from_parents(parents_resolved),
-            fps=fps or _fps_from_document(document),
+            fps=float(fps) if fps is not None else _fps_from_motion(clip),
             label=label,
             offset=offset,
         )
 
     joints = np.asarray(clip, dtype=np.float32)
     if joints.ndim != 3 or joints.shape[-1] != 3:
-        raise ValueError("Each clip must be a BVHDocument or array [T, J, 3].")
+        raise ValueError("Each clip must be a Motion or array [T, J, 3].")
     if parents is None and edges is None:
         raise ValueError("Pass either parents or edges for raw joint arrays.")
     parents_resolved = (
