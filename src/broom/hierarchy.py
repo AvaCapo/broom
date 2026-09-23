@@ -60,7 +60,9 @@ class Joint:
         of ``Xposition``, ``Yposition``, ``Zposition``, ``Xrotation``,
         ``Yrotation``, or ``Zrotation``; duplicate names are not allowed.
     local_orientation:
-        Unit rest-orientation quaternion in ``wxyz`` order. Added for future DCC integraion (for now is meaningless).
+        Unit rest-orientation quaternion in ``wxyz`` order. Forward kinematics
+        applies it before the joint's channel rotation. BVH export currently
+        supports only the identity orientation.
     end_site_offset:
         Optional three-dimensional BVH End Site offset in this joint's local
         coordinate system. It does not create a joint or motion channels.
