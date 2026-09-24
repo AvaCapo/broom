@@ -267,6 +267,57 @@ class Hierarchy:
         self._validate_index(index)
         return len(self.joints[index].channels)
 
+    def format_tree(
+            self,
+            *,
+            show_channels: bool = False,
+            show_offsets: bool = False,
+            max_depth: int | None = None,
+        ) -> str:
+            """Return the hierarchy formatted as an ASCII depth-first tree."""
+            if max_depth is not None and (
+                isinstance(max_depth, bool)
+                or not isinstance(max_depth, int)
+                or max_depth < 0
+            ):
+                raise ValueError("max_depth must be a non-negative integer or None.")
+    
+            lines: list[str] = []
+            stack: list[tuple[int, str, bool, int]] = [(self.root, "", True, 0)]
+            while stack:
+                joint_index, prefix, is_last, depth = stack.pop()
+                joint = self.joints[joint_index]
+                line = prefix + ("`-- " if is_last else "|-- ") + joint.name
+    
+                details: list[str] = []
+                if show_channels and joint.channels:
+                    details.append(f"channels={list(joint.channels)}")
+                if show_offsets:
+                    details.append(
+                        "offset=["
+                        f"{joint.offset[0]:.3f}, {joint.offset[1]:.3f}, "
+                        f"{joint.offset[2]:.3f}]"
+                    )
+                if details:
+                    line += "  (" + ", ".join(details) + ")"
+                lines.append(line)
+    
+                if max_depth is not None and depth >= max_depth:
+                    continue
+    
+                child_prefix = prefix + ("    " if is_last else "|   ")
+                children = self.children(joint_index)
+                for child_offset, child_index in reversed(list(enumerate(children))):
+                    stack.append(
+                        (
+                            child_index,
+                            child_prefix,
+                            child_offset == len(children) - 1,
+                            depth + 1,
+                        )
+                    )
+            return "\n".join(lines)
+
     def _validate_index(self, index: int) -> None:
         """Raise IndexError unless ``index`` denotes a hierarchy joint."""
         if (

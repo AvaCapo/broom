@@ -207,6 +207,12 @@ def compute_global_transforms_from_local(
     return world_positions, world_rotations
 
 
+def compute_rest_joint_positions(hierarchy: Hierarchy) -> np.ndarray:
+    """Return world-space joint positions in the hierarchy rest pose."""
+    positions, _ = compute_global_transforms_from_local(hierarchy)
+    return positions[0]
+
+
 def compute_global_transforms(motion: Motion) -> tuple[np.ndarray, np.ndarray]:
     """Decode a Motion and return world positions and rotation matrices.
 
