@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Sequence
 
 from broom import Motion
-from broom.bvh.interpolation.config import (
+from broom.interpolation.config import (
     DEFAULT_PRECISION,
     DEFAULT_STATIC_THRESHOLD,
     DEFAULT_STATIC_WINDOW,
 )
-from broom.bvh.interpolation.utils import interpolate_motion
+from broom.interpolation.utils import interpolate_motion
 from broom.io import load_bvh, write_bvh
 from broom.ops.motion_editing import trim_trailing_static_frames
 
