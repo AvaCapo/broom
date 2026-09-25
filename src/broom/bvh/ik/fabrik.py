@@ -6,7 +6,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from broom.bvh.channels import position_channel_dimension
-from broom.bvh.interpolation.utils import wrap_degrees
+from broom.rotations.euler import wrap_degrees
 from broom.bvh.kinematics import axis_rotation_matrices, compute_global_positions
 from broom.bvh.ops import with_motion_values
 from broom.bvh.schemas import BVHDocument

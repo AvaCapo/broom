@@ -4,7 +4,7 @@ import numpy as np
 import warnings
 from scipy.spatial.transform import Rotation
 
-from broom.bvh.interpolation.utils import wrap_degrees
+from broom.rotations.euler import wrap_degrees
 from broom.bvh.math_helpers import normalize_vectors
 from broom.bvh.ops.skeleton import compute_rest_joint_positions
 from broom.bvh.schemas import BVHDocument

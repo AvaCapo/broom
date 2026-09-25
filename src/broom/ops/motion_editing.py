@@ -86,6 +86,61 @@ def reverse(
     return motion.with_values(values)
 
 
+# TODO: Should we adapt the below functions to Motion class or still using ndarray?
+def count_trailing_static_frames(
+    motion_values: np.ndarray,
+    threshold: float,
+    window: int,
+) -> int:
+    """Count redundant static frames at the end of motion data.
+
+    The first frame of the static segment is kept as an anchor; only frames
+    after it are counted as removable.
+    """
+
+    values = np.asarray(motion_values, dtype=np.float64)
+    if values.ndim != 2:
+        raise ValueError("Motion values must be a 2D array.")
+    if values.shape[0] < 2:
+        return 0
+
+    threshold = float(threshold)
+    window = max(1, int(window))
+    frame_deltas = np.max(np.abs(np.diff(values, axis=0)), axis=1)
+
+    static_diffs = 0
+    for delta in frame_deltas[::-1]:
+        if float(delta) <= threshold:
+            static_diffs += 1
+            continue
+        break
+
+    if static_diffs < window:
+        return 0
+    return static_diffs
+
+
+def trim_trailing_static_frames(
+    motion_values: np.ndarray,
+    min_frames: int,
+    threshold: float,
+    window: int,
+) -> np.ndarray:
+    """Remove redundant trailing static frames while keeping min_frames."""
+
+    values = np.asarray(motion_values, dtype=np.float64)
+    removable = count_trailing_static_frames(
+        motion_values=values,
+        threshold=threshold,
+        window=window,
+    )
+    if removable == 0:
+        return values.copy()
+
+    keep_count = max(int(min_frames), values.shape[0] - removable)
+    return values[:keep_count].copy()
+
+
 # TODO: Define [start, stop) timestamp selection before adding slice_by_time.
 # def slice_by_time(
 #     document: BVHDocument,
