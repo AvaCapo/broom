@@ -203,7 +203,7 @@ class Hierarchy:
         return sum(len(joint.channels) for joint in self.joints)
 
     @property
-    def parameter_width(self) -> int:
+    def parameter_width(self) -> int: # TODO: consider deprecating this property
         """Return ``total_channels`` as a compatibility alias."""
         return self.total_channels
 
@@ -266,6 +266,53 @@ class Hierarchy:
         """Return the number of scalar channels declared by a joint."""
         self._validate_index(index)
         return len(self.joints[index].channels)
+
+    def channel_index(self, joint_name: str, channel_name: str) -> int:
+        """Return the scalar-table index of a named joint channel."""
+        joint_index = self.joint_index(joint_name)
+        try:
+            channel_offset = self.joints[joint_index].channels.index(channel_name)
+        except ValueError as error:
+            raise KeyError(
+                f"Joint {joint_name!r} does not declare channel {channel_name!r}."
+            ) from error
+        return self.channel_start(joint_index) + channel_offset
+
+    def position_channel_indices(self, joint_name: str | None = None) -> tuple[int, ...]:
+        """Return scalar-table indices of position channels.
+
+        When ``joint_name`` is None, indices for every joint are returned 
+        in hierarchy layout order.
+        """
+        joint_indices = (
+            range(self.joint_count)
+            if joint_name is None
+            else (self.joint_index(joint_name),)
+        )
+        return tuple(
+            self.channel_start(joint_index) + channel_offset
+            for joint_index in joint_indices
+            for channel_offset, channel in enumerate(self.joints[joint_index].channels)
+            if channel.endswith("position")
+        )
+
+    def rotation_channel_indices(self, joint_name: str | None = None) -> tuple[int, ...]:
+        """Return scalar-table indices of rotation channels.
+
+        When ``joint_name`` is None, indices for every joint are returned 
+        in hierarchy layout order.
+        """
+        joint_indices = (
+            range(self.joint_count)
+            if joint_name is None
+            else (self.joint_index(joint_name),)
+        )
+        return tuple(
+            self.channel_start(joint_index) + channel_offset
+            for joint_index in joint_indices
+            for channel_offset, channel in enumerate(self.joints[joint_index].channels)
+            if channel.endswith("rotation")
+        )
 
     def format_tree(
             self,

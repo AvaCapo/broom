@@ -1,18 +1,13 @@
-"""Motion editing operations and legacy BVH motion helpers."""
+"""Motion editing operations."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from broom.bvh.interpolation.utils import (
-    root_position_indices,
-    validate_compatible_documents,
-)
-from broom.bvh.io import validate_motion_values
-from broom.bvh.schemas import BVHDocument
+from broom import Motion, Hierarchy
+from broom.ops.skeleton_editing import scale_offsets
 
 
 def scale_skeleton(motion: Motion, factor: float) -> Motion:
@@ -27,271 +22,148 @@ def scale_skeleton(motion: Motion, factor: float) -> Motion:
 
     scaled_hierarchy = scale_offsets(motion.hierarchy, factor)
     values = motion.values.copy()
-    position_indices = _position_channel_indices(motion.hierarchy)
+    position_indices = motion.hierarchy.position_channel_indices()
     if position_indices:
         values[:, position_indices] *= float(factor)
     return Motion(scaled_hierarchy, values, motion.frame_time)
 
 
-# TODO
-def fill_motion(
-    document: BVHDocument,
+def repeat_pose(
+    hierarchy: Hierarchy,
+    pose: np.ndarray | Sequence[float] | None,
     frame_count: int,
-    pose: np.ndarray | Sequence[float] | None = None,
-    frame_time: float | None = None,
-) -> BVHDocument:
-    """Create a legacy document whose motion is filled with one pose."""
-    frame_count = int(frame_count)
+    frame_time: float,
+) -> Motion:
+    """Return a Motion containing a repeated pose or zero channel values."""
+    if not isinstance(hierarchy, Hierarchy):
+        raise TypeError("hierarchy must be a Hierarchy.")
+    if isinstance(frame_count, bool) or not isinstance(frame_count, int):
+        raise ValueError("frame_count must be a positive integer.")
     if frame_count <= 0:
-        raise ValueError("frame_count must be positive.")
+        raise ValueError("frame_count must be a positive integer.")
     if pose is None:
-        motion_values = np.zeros((frame_count, document.total_channels), dtype=np.float64)
+        values = np.zeros((frame_count, hierarchy.total_channels), dtype=np.float64)
     else:
-        pose_values = _single_pose_values(document=document, pose=pose)
-        motion_values = np.repeat(pose_values[None, :], frame_count, axis=0)
-    return with_motion_values(document, motion_values, frame_time)
+        pose_values = np.asarray(pose, dtype=np.float64)
+        if pose_values.ndim != 1 or pose_values.shape[0] != hierarchy.total_channels:
+            raise ValueError(
+                f"pose must have shape ({hierarchy.total_channels},)."
+            )
+        values = np.repeat(pose_values[None, :], frame_count, axis=0)
+    return Motion(hierarchy, values, frame_time)
 
-# TODO
+
 def trim_frames(
-    document: BVHDocument,
-    start_frame: Optional[int] = None,
-    end_frame: Optional[int] = None,
-) -> BVHDocument:
-    """Return a copy of the document containing a frame slice.
-
-    ``end_frame`` is exclusive, matching normal Python slicing.
-    """
-
-    start, end = _normalize_frame_slice(
-        frame_count=document.frame_count,
-        start_frame=start_frame,
-        end_frame=end_frame,
+    motion: Motion,
+    start: int | None = None,
+    stop: int | None = None,
+) -> Motion:
+    """Return a non-empty frame slice using Python start/stop semantics."""
+    if not isinstance(motion, Motion):
+        raise TypeError("motion must be a Motion.")
+    normalized_start, normalized_stop, _ = slice(start, stop).indices(
+        motion.frame_count
     )
-    return with_motion_values(
-        document=document,
-        motion_values=document.motion_values[start:end],
-    )
-
-
-# TODO
-def slice_by_time(
-    document: BVHDocument,
-    start_seconds: float | None = None,
-    end_seconds: float | None = None,
-) -> BVHDocument:
-    """Return a copy of the document sliced by seconds.
-
-    end_seconds is exclusive. The start time is floored to the nearest
-    source frame and the end time is ceiled so the requested time range is not
-    accidentally shortened.
-    """
-
-    frame_time = _require_frame_time(document)
-    start_frame = (
-        None
-        if start_seconds is None
-        else int(np.floor(float(start_seconds) / frame_time))
-    )
-    end_frame = (
-        None if end_seconds is None else int(np.ceil(float(end_seconds) / frame_time))
-    )
-    return trim_frames(
-        document=document,
-        start_frame=start_frame,
-        end_frame=end_frame,
-    )
-
-
-# TODO
-def reverse(
-    document: BVHDocument,
-    keep_root_start: bool = False,
-) -> BVHDocument:
-    """Return a copy of the document with frames in reverse order."""
-
-    motion_values = document.motion_values[::-1].copy()
-    if keep_root_start and motion_values.shape[0] > 0:
-        indices = root_position_indices(document)
-        if indices:
-            offset = document.motion_values[0, indices] - motion_values[0, indices]
-            motion_values[:, indices] += offset
-    return with_motion_values(document=document, motion_values=motion_values)
-
-
-# TODO
-def zero_origin(
-    document: BVHDocument,
-    axes: Sequence[str] | None = None,
-) -> BVHDocument:
-    """Return a bvh animation where position channels start at zero.
-
-    :param document: BVH document to modify.
-    :param axes: Optional list of root position channel names to zero.
-    """
-
-    indices = _root_position_indices_for_axes(document=document, axes=axes)
-    motion_values = document.motion_values.copy()
-    if indices and motion_values.shape[0] > 0:
-        motion_values[:, indices] -= motion_values[0, indices]
-    return with_motion_values(document=document, motion_values=motion_values)
-
-# TODO
-def _root_position_indices_for_axes(
-    document: BVHDocument,
-    axes: Sequence[str] | None,
-) -> list[int]:
-    
-    """Return absolute root position channel indices for selected axes.
-    
-    :param document: BVH document to query for root channels.
-    :param axes: Optional list of root position channel names to select.
-    """
-
-    root_joint = next(
-        (joint for joint in document.joints if joint.parent == -1),
-        None,
-    )
-    if root_joint is None:
-        return []
-
-    if axes is None:
-        return [
-            root_joint.channel_start + offset
-            for offset, channel in enumerate(root_joint.channels)
-            if channel.endswith("position")
-        ]
-
-    indices = []
-    for axis in axes:
-        if axis not in root_joint.channels:
-            raise ValueError(
-                f"Root channel '{axis}' was not found. "
-                f"Available root channels: {', '.join(root_joint.channels)}"
-            )
-        indices.append(
-            root_joint.channel_start + root_joint.channels.index(axis)
-            )
-    return indices
-
-# TODO
-def _normalize_frame_slice(
-    frame_count: int,
-    start_frame: Optional[int] = 0,
-    end_frame: Optional[int] = None,
-) -> tuple[int, int]:
-    """Normalize optional frame slice bounds and reject empty slices."""
-
-    end = frame_count if end_frame is None else int(end_frame)
-
-    start = min(max(start_frame, 0), frame_count)
-    end = min(max(end_frame, start_frame), frame_count)
-    if end < start:
-        raise ValueError(f"Frame slice end must be >= start, got {start}..{end}.")
-    if end == start:
+    if normalized_stop <= normalized_start:
         raise ValueError("Frame slice cannot be empty.")
-    return start, end
+    return motion.with_values(motion.values[normalized_start:normalized_stop])
 
-# TODO
-def _require_frame_time(document: BVHDocument) -> float:
-    """Return positive frame time or raise a clear error."""
 
-    if document.frame_time is None or document.frame_time <= 0.0:
-        raise ValueError("BVH document does not have a positive frame_time.")
-    return float(document.frame_time)
+def reverse(
+    motion: Motion,
+    keep_root_start: bool = False,
+) -> Motion:
+    """Return a Motion with frames in reverse order."""
+    if not isinstance(motion, Motion):
+        raise TypeError("motion must be a Motion.")
+    values = motion.values[::-1].copy()
+    # TODO: Decide whether implicit root-start compensation belongs in reverse.
+    if keep_root_start:
+        indices = motion.hierarchy.position_channel_indices(motion.hierarchy.root_name)
+        if indices:
+            offset = motion.values[0, indices] - values[0, indices]
+            values[:, indices] += offset
+    return motion.with_values(values)
 
-# TODO
-def with_motion_values(
-    document: BVHDocument,
-    motion_values: np.ndarray,
-    frame_time: float | None = None,
-) -> BVHDocument:
-    """Create a document copy with replaced motion values and metadata."""
 
-    values = validate_motion_values(document=document, motion_values=motion_values)
-    new_frame_time = document.frame_time if frame_time is None else float(frame_time)
-    return BVHDocument(
-        path=document.path,
-        prefix_lines=_update_prefix_metadata(
-            prefix_lines=document.prefix_lines,
-            frame_count=values.shape[0],
-            frame_time=new_frame_time,
-        ),
-        motion_rows=tuple(),
-        motion_values=values,
-        joints=document.joints,
-        total_channels=document.total_channels,
-        root_name=document.root_name,
-        root_channels=document.root_channels,
-        frame_time=new_frame_time,
-        declared_frames=values.shape[0],
-    )
+# TODO: Define [start, stop) timestamp selection before adding slice_by_time.
+# def slice_by_time(
+#     document: BVHDocument,
+#     start_seconds: float | None = None,
+#     end_seconds: float | None = None,
+# ) -> BVHDocument:
+#     """Return a copy of the document sliced by seconds.
 
-# TODO
-def _single_pose_values(
-    document: BVHDocument,
-    pose: np.ndarray | Sequence[float],
-) -> np.ndarray:
-    """Normalize one motion pose to a flat channel vector."""
+#     end_seconds is exclusive. The start time is floored to the nearest
+#     source frame and the end time is ceiled so the requested time range is not
+#     accidentally shortened.
+#     """
 
-    pose_values = np.asarray(pose, dtype=np.float64)
-    if pose_values.ndim == 2:
-        if pose_values.shape[0] != 1:
-            raise ValueError(
-                "pose must be a single frame with shape (channels,) or "
-                "(1, channels)."
-            )
-        pose_values = pose_values[0]
-    elif pose_values.ndim != 1:
-        raise ValueError(
-            "pose must be a single frame with shape (channels,) or "
-            "(1, channels)."
-        )
+#     frame_time = _require_frame_time(document)
+#     start_frame = (
+#         None
+#         if start_seconds is None
+#         else int(np.floor(float(start_seconds) / frame_time))
+#     )
+#     end_frame = (
+#         None if end_seconds is None else int(np.ceil(float(end_seconds) / frame_time))
+#     )
+#     return trim_frames(
+#         document=document,
+#         start_frame=start_frame,
+#         end_frame=end_frame,
+#     )
 
-    if pose_values.shape[0] != document.total_channels:
-        raise ValueError(
-            "pose channel count must match document.total_channels, got "
-            f"{pose_values.shape[0]} and {document.total_channels}."
-        )
+# TODO: Define zero_root_translation and rebase_root_position contracts separately.
+# def zero_origin(
+#     document: BVHDocument,
+#     axes: Sequence[str] | None = None,
+# ) -> BVHDocument:
+#     """Return a bvh animation where position channels start at zero.
 
-    return np.nan_to_num(pose_values, nan=0.0)
+#     :param document: BVH document to modify.
+#     :param axes: Optional list of root position channel names to zero.
+#     """
 
-# TODO
-def _update_prefix_metadata(
-    prefix_lines: Sequence[str],
-    frame_count: int,
-    frame_time: float | None,
-) -> tuple[str, ...]:
-    """Return prefix lines with updated frame count and frame time."""
+#     indices = _root_position_indices_for_axes(document=document, axes=axes)
+#     motion_values = document.motion_values.copy()
+#     if indices and motion_values.shape[0] > 0:
+#         motion_values[:, indices] -= motion_values[0, indices]
+#     return with_motion_values(document=document, motion_values=motion_values)
 
-    updated = []
-    replaced_frames = False
-    replaced_frame_time = False
+# def _root_position_indices_for_axes(
+#     document: BVHDocument,
+#     axes: Sequence[str] | None,
+# ) -> list[int]:
+    
+#     """Return absolute root position channel indices for selected axes.
+    
+#     :param document: BVH document to query for root channels.
+#     :param axes: Optional list of root position channel names to select.
+#     """
 
-    for line in prefix_lines:
-        stripped = line.strip().lower()
-        newline = line[len(line.rstrip("\r\n")) :]
-        if stripped.startswith("frames:"):
-            updated.append(f"Frames: {frame_count}{newline}")
-            replaced_frames = True
-            continue
-        if frame_time is not None and stripped.startswith("frame time:"):
-            updated.append(f"Frame Time: {frame_time:.8f}{newline}")
-            replaced_frame_time = True
-            continue
-        updated.append(line)
+#     root_joint = next(
+#         (joint for joint in document.joints if joint.parent == -1),
+#         None,
+#     )
+#     if root_joint is None:
+#         return []
 
-    if not replaced_frames:
-        raise ValueError("BVH prefix does not contain a Frames header.")
-    if frame_time is not None and not replaced_frame_time:
-        raise ValueError("BVH prefix does not contain a Frame Time header.")
-    return tuple(updated)
+#     if axes is None:
+#         return [
+#             root_joint.channel_start + offset
+#             for offset, channel in enumerate(root_joint.channels)
+#             if channel.endswith("position")
+#         ]
 
-# TODO: consifer moving this function to property of the class
-def _position_channel_indices(hierarchy: Hierarchy) -> tuple[int, ...]:
-    """Return scalar-table indices of every position channel."""
-    return tuple(
-        hierarchy.channel_start(joint_index) + channel_offset
-        for joint_index, joint in enumerate(hierarchy.joints)
-        for channel_offset, channel in enumerate(joint.channels)
-        if channel.endswith("position")
-    )
+#     indices = []
+#     for axis in axes:
+#         if axis not in root_joint.channels:
+#             raise ValueError(
+#                 f"Root channel '{axis}' was not found. "
+#                 f"Available root channels: {', '.join(root_joint.channels)}"
+#             )
+#         indices.append(
+#             root_joint.channel_start + root_joint.channels.index(axis)
+#             )
+#     return indices

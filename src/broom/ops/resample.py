@@ -1,43 +1,33 @@
-"""BVH frame-rate resampling operations."""
+"""Frame-rate resampling operations."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from broom.bvh.interpolation.utils import (
-    blend_euler_degrees,
-    rotation_channel_groups,
-)
-from broom.bvh.ops.motion import (
-    _require_frame_time,
-    with_motion_values,
-)
-from broom.bvh.schemas import BVHDocument
+from broom import Hierarchy, Motion
+from broom.bvh.interpolation.utils import blend_euler_degrees # TODO: fix blend_euler_degrees import
 
 
-def resample_fps(document: BVHDocument, target_fps: float) -> BVHDocument:
-    """Return a copy of the document resampled to ``target_fps``."""
+def resample_fps(motion: Motion, target_fps: float) -> Motion:
+    """Return a copy of the Motion resampled to ``target_fps``."""
+    if not isinstance(motion, Motion):
+        raise TypeError("motion must be a Motion.")
 
     target_fps = float(target_fps)
     if target_fps <= 0.0:
         raise ValueError("Target FPS must be positive.")
 
-    source_frame_time = _require_frame_time(document)
     target_frame_time = 1.0 / target_fps
-    source_values = document.motion_values
+    source_values = motion.values
 
-    if document.frame_count <= 1:
-        return with_motion_values(
-            document=document,
-            motion_values=source_values.copy(),
-            frame_time=target_frame_time,
-        )
+    if motion.frame_count <= 1:
+        return Motion(motion.hierarchy, source_values, target_frame_time)
 
-    duration = (document.frame_count - 1) * source_frame_time
+    duration = (motion.frame_count - 1) * motion.frame_time
     target_frame_count = max(1, int(round(duration * target_fps)) + 1)
 
-    source_times = np.arange(document.frame_count, dtype=np.float64)
-    source_times *= source_frame_time
+    source_times = np.arange(motion.frame_count, dtype=np.float64)
+    source_times *= motion.frame_time
     target_times = np.linspace(
         0.0,
         duration,
@@ -46,7 +36,7 @@ def resample_fps(document: BVHDocument, target_fps: float) -> BVHDocument:
     )
 
     resampled = np.empty(
-        (target_frame_count, document.total_channels),
+        (target_frame_count, motion.hierarchy.total_channels),
         dtype=np.float64,
     )
     _resample_motion_channels(
@@ -56,16 +46,13 @@ def resample_fps(document: BVHDocument, target_fps: float) -> BVHDocument:
         resampled=resampled,
     )
     _resample_rotation_channels(
-        document=document,
+        hierarchy=motion.hierarchy,
+        source_values=source_values,
         source_times=source_times,
         target_times=target_times,
         resampled=resampled,
     )
-    return with_motion_values(
-        document=document,
-        motion_values=resampled,
-        frame_time=target_frame_time,
-    )
+    return Motion(motion.hierarchy, resampled, target_frame_time)
 
 
 def _resample_motion_channels(
@@ -85,15 +72,25 @@ def _resample_motion_channels(
 
 
 def _resample_rotation_channels(
-    document: BVHDocument,
+    hierarchy: Hierarchy,
+    source_values: np.ndarray,
     source_times: np.ndarray,
     target_times: np.ndarray,
     resampled: np.ndarray,
 ) -> None:
     """Replace linearly interpolated rotation channels with SLERP results."""
 
-    source_values = document.motion_values
-    for indices, order in rotation_channel_groups(document):
+    for joint in hierarchy.joints:
+        indices = list(hierarchy.rotation_channel_indices(joint.name))
+        if len(indices) != 3:
+            continue
+        order = np.asarray(
+            [
+                channel[0].lower()
+                for channel in joint.channels
+                if channel.endswith("rotation")
+            ]
+        )
         for target_index, target_time in enumerate(target_times):
             right = int(np.searchsorted(source_times, target_time, side="right"))
             if right <= 0:
@@ -136,3 +133,11 @@ def _blend_rotation_degrees(
     except ValueError:
         delta = (second_angles - first_angles + 180.0) % 360.0 - 180.0
         return (first_angles + delta * alpha + 180.0) % 360.0 - 180.0
+
+
+# TODO: Correct the existing numerical behavior before treating resampling as final.
+# - ``linspace`` can disagree with the recorded ``1 / target_fps`` time grid.
+# - Euler orders are converted to lowercase and differ from FK's intrinsic order.
+# - ValueError silently falls back from SLERP to channel-space interpolation.
+# - One- and two-axis rotation groups use baseline linear interpolation.
+# - Wrapped Euler output loses winding information.
