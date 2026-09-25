@@ -26,3 +26,34 @@ def blend_euler_degrees(
 def wrap_degrees(values: np.ndarray) -> np.ndarray:
     """Wrap angles to the [-180, 180) interval."""
     return (values + 180.0) % 360.0 - 180.0
+
+
+def axis_rotation_matrices(axis: str, radians: np.ndarray) -> np.ndarray:
+    """Return rotation matrices for an axis and per-frame angles."""
+
+    matrices = np.zeros((len(radians), 3, 3), dtype=np.float64)
+    cos_v = np.cos(radians)
+    sin_v = np.sin(radians)
+
+    if axis == "X":
+        matrices[:, 0, 0] = 1.0
+        matrices[:, 1, 1] = cos_v
+        matrices[:, 1, 2] = -sin_v
+        matrices[:, 2, 1] = sin_v
+        matrices[:, 2, 2] = cos_v
+    elif axis == "Y":
+        matrices[:, 0, 0] = cos_v
+        matrices[:, 0, 2] = sin_v
+        matrices[:, 1, 1] = 1.0
+        matrices[:, 2, 0] = -sin_v
+        matrices[:, 2, 2] = cos_v
+    elif axis == "Z":
+        matrices[:, 0, 0] = cos_v
+        matrices[:, 0, 1] = -sin_v
+        matrices[:, 1, 0] = sin_v
+        matrices[:, 1, 1] = cos_v
+        matrices[:, 2, 2] = 1.0
+    else:
+        raise ValueError(f"Unsupported rotation axis '{axis}'.")
+
+    return matrices

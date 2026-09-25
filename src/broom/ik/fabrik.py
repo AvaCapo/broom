@@ -5,11 +5,10 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from broom import Hierarchy, Motion
 from broom.bvh.channels import position_channel_dimension
-from broom.rotations.euler import wrap_degrees
-from broom.bvh.kinematics import axis_rotation_matrices, compute_global_positions
-from broom.bvh.ops import with_motion_values
-from broom.bvh.schemas import BVHDocument
+from broom.kinematics import compute_global_transforms
+from broom.rotations.euler import axis_rotation_matrices, wrap_degrees
 
 
 def solve_fabrik(
@@ -141,8 +140,8 @@ def solve_fabrik_chain(
 
 
 def solve_fabrik_bvh_frame(
-    document: BVHDocument,
-    frame_values: np.ndarray,
+    motion: Motion,
+    frame_index: int,
     *,
     target_position: np.ndarray,
     chain_joint_names: list[str] | tuple[str, ...] | None = None,
@@ -152,34 +151,27 @@ def solve_fabrik_bvh_frame(
     pole_target: np.ndarray | None = None,
     pole_weight: float = 1.0,
 ) -> np.ndarray:
-    """Solve one BVH frame with FABRIK and return updated motion channels."""
+    """Solve one Motion frame with FABRIK and return updated channel values."""
 
     chain = _resolve_chain_indices(
-        document=document,
+        hierarchy=motion.hierarchy,
         chain_joint_names=chain_joint_names,
         chain_indices=chain_indices,
     )
     if chain.shape[0] < 2:
         raise ValueError("FABRIK chain must contain at least two joints.")
 
-    frame = np.asarray(frame_values, dtype=np.float64).copy()
-    if frame.shape != (document.total_channels,):
-        raise ValueError(
-            "frame_values must have shape "
-            f"({document.total_channels},), got {frame.shape}."
-        )
-
-    frame_document = with_motion_values(
-        document=document,
-        motion_values=frame[None, :],
-    )
-    world_positions = compute_global_positions(frame_document)[0]
-    world_rotations, local_positions, local_rotations = (
+    frame = motion.frame(frame_index).copy()
+    frame_motion = motion.with_values(frame[None, :])
+    world_positions, world_rotations = compute_global_transforms(frame_motion)
+    _, local_positions, local_rotations = (
         _compute_frame_rotations_and_local_positions(
-            document=document,
+            hierarchy=motion.hierarchy,
             frame_values=frame,
         )
     )
+    world_positions = world_positions[0]
+    world_rotations = world_rotations[0]
 
     solved_positions = solve_fabrik(
         joint_positions=world_positions[chain],
@@ -201,7 +193,7 @@ def solve_fabrik_bvh_frame(
     for chain_offset in range(chain.shape[0] - 1):
         joint_index = int(chain[chain_offset])
         child_index = int(chain[chain_offset + 1])
-        joint = document.joints[joint_index]
+        joint = motion.hierarchy.joints[joint_index]
 
         rotation_offsets = [
             offset
@@ -235,14 +227,15 @@ def solve_fabrik_bvh_frame(
             Rotation.from_matrix(local_rotation).as_euler(order, degrees=True)
         )
         for angle_offset, channel_offset in enumerate(rotation_offsets):
-            frame[joint.channel_start + channel_offset] = angles[angle_offset]
+            frame[
+                motion.hierarchy.channel_start(joint_index) + channel_offset
+            ] = angles[angle_offset]
 
     return frame
 
 
 def solve_fabrik_bvh_clip(
-    document: BVHDocument,
-    motion_values: np.ndarray,
+    motion: Motion,
     *,
     target_positions: np.ndarray,
     chain_joint_names: list[str] | tuple[str, ...] | None = None,
@@ -251,32 +244,29 @@ def solve_fabrik_bvh_clip(
     threshold: float = 1.0e-3,
     pole_targets: np.ndarray | None = None,
     pole_weight: float = 1.0,
-) -> BVHDocument:
-    """Solve FABRIK for one chain across a whole BVH motion clip."""
+) -> Motion:
+    """Solve FABRIK for one chain across a whole Motion clip."""
 
-    motion = np.asarray(motion_values, dtype=np.float64).copy()
-    if motion.ndim != 2 or motion.shape[1] != document.total_channels:
-        raise ValueError(
-            "motion_values must have shape "
-            f"(frames, {document.total_channels})."
-        )
+    if not isinstance(motion, Motion):
+        raise TypeError("motion must be a Motion.")
+    values = motion.values.copy()
 
     targets = np.asarray(target_positions, dtype=np.float64)
-    if targets.shape != (motion.shape[0], 3):
+    if targets.shape != (motion.frame_count, 3):
         raise ValueError(
             "target_positions must have shape "
-            f"({motion.shape[0]}, 3), got {targets.shape}."
+            f"({motion.frame_count}, 3), got {targets.shape}."
         )
 
     poles = _resolve_pole_targets(
         pole_targets=pole_targets,
-        frame_count=motion.shape[0],
+        frame_count=motion.frame_count,
     )
 
-    for frame_index in range(motion.shape[0]):
-        motion[frame_index] = solve_fabrik_bvh_frame(
-            document=document,
-            frame_values=motion[frame_index],
+    for frame_index in range(motion.frame_count):
+        values[frame_index] = solve_fabrik_bvh_frame(
+            motion=motion.with_values(values),
+            frame_index=frame_index,
             target_position=targets[frame_index],
             chain_joint_names=chain_joint_names,
             chain_indices=chain_indices,
@@ -286,10 +276,7 @@ def solve_fabrik_bvh_clip(
             pole_weight=pole_weight,
         )
 
-    return with_motion_values(
-        document=document,
-        motion_values=motion,
-    )
+    return motion.with_values(values)
 
 
 def _apply_pole_constraint(
@@ -336,21 +323,23 @@ def _apply_pole_constraint(
 
 def _compute_frame_rotations_and_local_positions(
     *,
-    document: BVHDocument,
+    hierarchy: Hierarchy,
     frame_values: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    joint_count = len(document.joints)
+    joint_count = hierarchy.joint_count
     world_rotations = np.zeros((joint_count, 3, 3), dtype=np.float64)
     local_positions = np.zeros((joint_count, 3), dtype=np.float64)
     local_rotations = np.zeros((joint_count, 3, 3), dtype=np.float64)
 
     identity = np.eye(3, dtype=np.float64)
-    for joint_index, joint in enumerate(document.joints):
+    for joint_index, joint in enumerate(hierarchy.joints):
         local_position = np.asarray(joint.offset, dtype=np.float64).copy()
         local_rotation = identity.copy()
 
         for channel_offset, channel in enumerate(joint.channels):
-            value = float(frame_values[joint.channel_start + channel_offset])
+            value = float(
+                frame_values[hierarchy.channel_start(joint_index) + channel_offset]
+            )
             if channel.endswith("position"):
                 local_position[position_channel_dimension(channel)] += value
             elif channel.endswith("rotation"):
@@ -374,7 +363,7 @@ def _compute_frame_rotations_and_local_positions(
 
 def _resolve_chain_indices(
     *,
-    document: BVHDocument,
+    hierarchy: Hierarchy,
     chain_joint_names: list[str] | tuple[str, ...] | None,
     chain_indices: np.ndarray | list[int] | tuple[int, ...] | None,
 ) -> np.ndarray:
@@ -385,7 +374,7 @@ def _resolve_chain_indices(
 
     if chain_joint_names is not None:
         return np.asarray(
-            [document.joint_index[name] for name in chain_joint_names],
+            [hierarchy.joint_index(name) for name in chain_joint_names],
             dtype=np.int64,
         )
 

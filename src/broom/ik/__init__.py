@@ -1,6 +1,6 @@
 """Inverse-kinematics solvers for BVH motion editing."""
 
-from broom.bvh.ik.fabrik import (
+from broom.ik.fabrik import (
     solve_fabrik,
     solve_fabrik_bvh_clip,
     solve_fabrik_bvh_frame,

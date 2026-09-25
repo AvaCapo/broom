@@ -1,11 +1,11 @@
-"""Channel and joint selection helpers for BVH documents."""
+"""Channel and joint selection helpers for Broom motions."""
 
 from __future__ import annotations
 from typing import Sequence
 
 import numpy as np
 
-from broom.bvh.schemas import BVHDocument, BVHJoint
+from broom import Joint, Motion
 
 
 def root_channel_indices(
@@ -24,11 +24,14 @@ def root_channel_indices(
     return indices
 
 
-def root_points(document: BVHDocument, axes: Sequence[str]) -> np.ndarray:
+def root_points(motion: Motion, axes: Sequence[str]) -> np.ndarray:
     """Return selected root channels as a 2D array copy."""
 
-    channel_indices = root_channel_indices(document.root_channels, axes)
-    return document.motion_values[:, channel_indices].copy()
+    root_index = motion.hierarchy.root
+    root_channels = motion.hierarchy.root_joint.channels
+    channel_indices = root_channel_indices(root_channels, axes)
+    start = motion.hierarchy.channel_start(root_index)
+    return motion.values[:, [start + index for index in channel_indices]].copy()
 
 
 def position_channel_dimension(channel: str) -> int:
@@ -54,7 +57,7 @@ def joint_name_matches(name: str, target: str) -> bool:
 
 
 def select_body_joints(
-    joints: Sequence[BVHJoint],
+    joints: Sequence[Joint],
     weighted_targets: Sequence[tuple[str, float]],
     use_all_joints: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
