@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from broom import Hierarchy, Motion
-from broom.bvh.interpolation.utils import blend_euler_degrees # TODO: fix blend_euler_degrees import
+from broom.rotations.euler import blend_euler_degrees
 
 
 def resample_fps(motion: Motion, target_fps: float) -> Motion:
