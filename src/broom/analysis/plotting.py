@@ -1,4 +1,4 @@
-"""Matplotlib plots for BVH analysis results."""
+"""Matplotlib plots for motion analysis results."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from broom.bvh.analysis.kinematics import (
     compute_world_kinematics,
 )
 from broom.bvh.analysis.schemas import WorldKinematicsResult
-from broom.bvh.schemas import BVHDocument
+from broom import Motion
 
 _SIGNAL_KEY_MAP = {
     "position": "pos_w",
@@ -76,7 +76,7 @@ class PlotConfig:
 
 
 def plot_joints_panel(
-    document: BVHDocument,
+    motion: Motion,
     joint_indices: list[int] | tuple[int, ...],
     *,
     kinematics: WorldKinematicsResult | None = None,
@@ -89,13 +89,13 @@ def plot_joints_panel(
     """Show multiple joints on multiple subplots."""
 
     cfg = PlotConfig(figsize=(10, 8)) if cfg is None else cfg
-    kin = _require_kinematics(document, kinematics)
+    kin = _require_kinematics(motion, kinematics)
     panels_resolved = _resolve_panels(
         selected=panels,
         preset=preset,
         default=("pos.mag", "vel.mag", "acc.mag"),
     )
-    sl = _resolve_time_range(document.frame_count, t_range)
+    sl = _resolve_time_range(motion.frame_count, t_range)
 
     nrows = len(panels_resolved)
     fig, axes = plt.subplots(
@@ -111,7 +111,7 @@ def plot_joints_panel(
             y, ylabel = _series_1d(kin, joint_index, sl, series_key)
             ax.plot(
                 y,
-                label=_joint_label(document, joint_index, joint_labels),
+                label=_joint_label(motion, joint_index, joint_labels),
                 alpha=cfg.line_alpha,
                 lw=cfg.linewidth,
             )
@@ -127,7 +127,7 @@ def plot_joints_panel(
 
 
 def plot_trajectory_planes(
-    document: BVHDocument,
+    motion: Motion,
     joint_indices: list[int] | tuple[int, ...],
     *,
     kinematics: WorldKinematicsResult | None = None,
@@ -142,8 +142,8 @@ def plot_trajectory_planes(
     """Plot trajectories of multiple joints projected to planes."""
 
     cfg = PlotConfig(figsize=(12, 9)) if cfg is None else cfg
-    kin = _require_kinematics(document, kinematics)
-    sl = _resolve_time_range(document.frame_count, t_range)
+    kin = _require_kinematics(motion, kinematics)
+    sl = _resolve_time_range(motion.frame_count, t_range)
 
     fig, axes = plt.subplots(len(signals), len(planes), figsize=cfg.figsize)
     axes = np.asarray(axes, dtype=object).reshape(len(signals), len(planes))
@@ -165,7 +165,7 @@ def plot_trajectory_planes(
                         traj[:, dim1],
                         lw=cfg.linewidth,
                         alpha=cfg.line_alpha,
-                        label=_joint_label(document, joint_index, joint_labels),
+                        label=_joint_label(motion, joint_index, joint_labels),
                     )
 
             ax.set_xlabel(axis0)
@@ -184,7 +184,7 @@ def plot_trajectory_planes(
 
 
 def plot_joints_panel_multi(
-    documents: list[BVHDocument] | tuple[BVHDocument, ...],
+    motions: list[Motion] | tuple[Motion, ...],
     joint_indices: list[int] | tuple[int, ...],
     *,
     kinematics_results: list[WorldKinematicsResult] | tuple[WorldKinematicsResult, ...] | None = None,
@@ -197,8 +197,8 @@ def plot_joints_panel_multi(
 ) -> plt.Figure:
     """Show multiple clips and multiple joints on shared subplots."""
 
-    if not documents:
-        raise ValueError("documents must contain at least one clip.")
+    if not motions:
+        raise ValueError("motions must contain at least one clip.")
 
     cfg = PlotConfig(figsize=(10, 8)) if cfg is None else cfg
     panels_resolved = _resolve_panels(
@@ -206,9 +206,9 @@ def plot_joints_panel_multi(
         preset=preset,
         default=("pos.mag", "vel.mag", "acc.mag"),
     )
-    labels = _normalize_clip_labels(len(documents), clip_labels)
-    clip_colors, joint_linestyles = _style_maps(len(documents), joint_indices)
-    kins = _require_kinematics_many(documents, kinematics_results)
+    labels = _normalize_clip_labels(len(motions), clip_labels)
+    clip_colors, joint_linestyles = _style_maps(len(motions), joint_indices)
+    kins = _require_kinematics_many(motions, kinematics_results)
 
     nrows = len(panels_resolved)
     fig, axes = plt.subplots(
@@ -229,7 +229,7 @@ def plot_joints_panel_multi(
                     y,
                     label=_curve_label(
                         labels[clip_index],
-                        documents[clip_index],
+                        motions[clip_index],
                         joint_index,
                         joint_labels,
                         multiple_joints=len(joint_indices) > 1,
@@ -251,7 +251,7 @@ def plot_joints_panel_multi(
 
 
 def plot_trajectory_planes_multi(
-    documents: list[BVHDocument] | tuple[BVHDocument, ...],
+    motions: list[Motion] | tuple[Motion, ...],
     joint_indices: list[int] | tuple[int, ...],
     *,
     kinematics_results: list[WorldKinematicsResult] | tuple[WorldKinematicsResult, ...] | None = None,
@@ -266,13 +266,13 @@ def plot_trajectory_planes_multi(
 ) -> plt.Figure:
     """Plot projected trajectories for multiple clips and joints."""
 
-    if not documents:
-        raise ValueError("documents must contain at least one clip.")
+    if not motions:
+        raise ValueError("motions must contain at least one clip.")
 
     cfg = PlotConfig(figsize=(12, 9)) if cfg is None else cfg
-    labels = _normalize_clip_labels(len(documents), clip_labels)
-    clip_colors, joint_linestyles = _style_maps(len(documents), joint_indices)
-    kins = _require_kinematics_many(documents, kinematics_results)
+    labels = _normalize_clip_labels(len(motions), clip_labels)
+    clip_colors, joint_linestyles = _style_maps(len(motions), joint_indices)
+    kins = _require_kinematics_many(motions, kinematics_results)
 
     fig, axes = plt.subplots(len(signals), len(planes), figsize=cfg.figsize)
     axes = np.asarray(axes, dtype=object).reshape(len(signals), len(planes))
@@ -289,7 +289,7 @@ def plot_trajectory_planes_multi(
                     traj = signal_arr[sl, joint_index, :]
                     label = _curve_label(
                         labels[clip_index],
-                        documents[clip_index],
+                        motions[clip_index],
                         joint_index,
                         joint_labels,
                         multiple_joints=len(joint_indices) > 1,
@@ -331,7 +331,7 @@ def plot_trajectory_planes_multi(
 
 
 def plot_joint_debug(
-    document: BVHDocument,
+    motion: Motion,
     joint_idx: int,
     *,
     kinematics: WorldKinematicsResult | None = None,
@@ -343,13 +343,13 @@ def plot_joint_debug(
     """Plot one joint on one axis with multiple series overlaid."""
 
     cfg = PlotConfig() if cfg is None else cfg
-    kin = _require_kinematics(document, kinematics)
+    kin = _require_kinematics(motion, kinematics)
     series_resolved = _resolve_panels(
         selected=series,
         preset=preset,
         default=("pos.x", "pos.y", "pos.z"),
     )
-    sl = _resolve_time_range(document.frame_count, t_range)
+    sl = _resolve_time_range(motion.frame_count, t_range)
 
     fig, ax = plt.subplots(figsize=cfg.figsize)
     ylabel = "Value"
@@ -375,7 +375,7 @@ def plot_joint_debug(
 
 
 def plot_joint_debug_multi(
-    documents: list[BVHDocument] | tuple[BVHDocument, ...],
+    motions: list[Motion] | tuple[Motion, ...],
     joint_idx: int,
     *,
     kinematics_results: list[WorldKinematicsResult] | tuple[WorldKinematicsResult, ...] | None = None,
@@ -387,8 +387,8 @@ def plot_joint_debug_multi(
 ) -> plt.Figure:
     """Plot one joint for multiple clips on one axis."""
 
-    if not documents:
-        raise ValueError("documents must contain at least one clip.")
+    if not motions:
+        raise ValueError("motions must contain at least one clip.")
 
     cfg = PlotConfig() if cfg is None else cfg
     series_resolved = _resolve_panels(
@@ -396,8 +396,8 @@ def plot_joint_debug_multi(
         preset=preset,
         default=("pos.x", "pos.y", "pos.z"),
     )
-    labels = _normalize_clip_labels(len(documents), clip_labels)
-    kins = _require_kinematics_many(documents, kinematics_results)
+    labels = _normalize_clip_labels(len(motions), clip_labels)
+    kins = _require_kinematics_many(motions, kinematics_results)
 
     colors = list(plt.rcParams["axes.prop_cycle"].by_key().get("color", []))
     if not colors:
@@ -461,13 +461,13 @@ def _series_1d(
 
 
 def _joint_label(
-    document: BVHDocument,
+    motion: Motion,
     joint_idx: int,
     joint_labels: Optional[list[str] | tuple[str, ...]],
 ) -> str:
     if joint_labels is not None:
         return str(joint_labels[joint_idx])
-    return document.joint_names[joint_idx]
+    return motion.hierarchy.joint_names[joint_idx]
 
 
 def _resolve_panels(
@@ -511,12 +511,12 @@ def _style_maps(
 
 def _curve_label(
     clip_label: str,
-    document: BVHDocument,
+    motion: Motion,
     joint_idx: int,
     joint_labels: Optional[list[str] | tuple[str, ...]],
     multiple_joints: bool,
 ) -> str:
-    joint_name = _joint_label(document, joint_idx, joint_labels)
+    joint_name = _joint_label(motion, joint_idx, joint_labels)
     return f"{clip_label} / {joint_name}" if multiple_joints else clip_label
 
 
@@ -540,24 +540,24 @@ def _trajectory_signal_label(signal: str) -> str:
 
 
 def _require_kinematics(
-    document: BVHDocument,
+    motion: Motion,
     kinematics: WorldKinematicsResult | None,
 ) -> WorldKinematicsResult:
     return (
-        compute_world_kinematics(document)
+        compute_world_kinematics(motion)
         if kinematics is None
         else kinematics
     )
 
 
 def _require_kinematics_many(
-    documents: list[BVHDocument] | tuple[BVHDocument, ...],
+    motions: list[Motion] | tuple[Motion, ...],
     kinematics_results: list[WorldKinematicsResult] | tuple[WorldKinematicsResult, ...] | None,
 ) -> list[WorldKinematicsResult]:
     if kinematics_results is None:
-        return [compute_world_kinematics(document) for document in documents]
-    if len(kinematics_results) != len(documents):
+        return [compute_world_kinematics(motion) for motion in motions]
+    if len(kinematics_results) != len(motions):
         raise ValueError(
-            "kinematics_results length must match number of documents."
+            "kinematics_results length must match number of motions."
         )
     return list(kinematics_results)

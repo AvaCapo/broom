@@ -1,4 +1,4 @@
-"""World-space kinematics analysis over BVH documents."""
+"""World-space kinematics analysis over motions."""
 
 from collections.abc import Mapping, Sequence
 
@@ -15,12 +15,12 @@ from broom.bvh.analysis.schemas import (
     WorldKinematicsMeta,
     WorldKinematicsResult,
 )
-from broom.bvh.kinematics import compute_global_positions
-from broom.bvh.schemas import BVHDocument
+from broom import Motion
+from broom.kinematics import compute_global_positions
 
 
 def compute_world_kinematics(
-    document: BVHDocument,
+    motion: Motion,
     method: str = "gradient",
     *,
     sg_window: int = 9,
@@ -28,11 +28,11 @@ def compute_world_kinematics(
     sg_mode: str = "interp",
     prefilter: Mapping[str, float] | None = None,
 ) -> WorldKinematicsResult:
-    """Compute world-space position derivatives for a BVH document."""
+    """Compute world-space position derivatives for a motion."""
 
-    fps = _fps_from_document(document)
+    fps = _fps_from_motion(motion)
     dt = 1.0 / fps
-    pos_w = compute_global_positions(document).astype(np.float64, copy=False)
+    pos_w = compute_global_positions(motion).astype(np.float64, copy=False)
 
     if prefilter is not None:
         filter_type = str(prefilter.get("type", "")).lower()
@@ -111,7 +111,7 @@ def compute_world_kinematics(
 
 
 def compute_world_kinematics_many(
-    document: BVHDocument,
+    motion: Motion,
     methods: Sequence[str] = ("gradient", "five_point", "savgol"),
     *,
     sg_window: int = 9,
@@ -119,12 +119,12 @@ def compute_world_kinematics_many(
     sg_mode: str = "interp",
     prefilter: Mapping[str, float] | None = None,
 ) -> dict[str, WorldKinematicsResult]:
-    """Compute multiple world-kinematics variants for one BVH document."""
+    """Compute multiple world-kinematics variants for one motion."""
 
     output: dict[str, WorldKinematicsResult] = {}
     for method in methods:
         result = compute_world_kinematics(
-            document,
+            motion,
             method=method,
             sg_window=sg_window,
             sg_polyorder=sg_polyorder,
@@ -217,10 +217,10 @@ def reconstruct(
     raise ValueError("route must be 'acc_to_vel' | 'vel_to_pos' | 'acc_to_pos'.")
 
 
-def _fps_from_document(document: BVHDocument) -> float:
-    if document.frame_time is None or document.frame_time <= 0.0:
-        raise ValueError("BVH document does not have a positive frame_time.")
-    return 1.0 / float(document.frame_time)
+def _fps_from_motion(motion: Motion) -> float:
+    if motion.frame_time <= 0.0:
+        raise ValueError("Motion does not have a positive frame_time.")
+    return 1.0 / float(motion.frame_time)
 
 
 def _method_key(

@@ -1,4 +1,4 @@
-"""Notebook UI for BVH analysis plots."""
+"""Notebook UI for motion analysis plots."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from broom.bvh.analysis.plotting import (
     plot_trajectory_planes_multi,
 )
 from broom.bvh.analysis.schemas import WorldKinematicsResult
-from broom.bvh.schemas import BVHDocument
+from broom import Motion
 
 try:
     import ipywidgets as widgets
@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover - notebook-only dependency
 
 @dataclass
 class MotionPlotUI:
-    document: BVHDocument
+    motion: Motion
     joint_labels: Optional[list[str] | tuple[str, ...]] = None
     method: str = "savgol"
     sg_window: int = 9
@@ -48,7 +48,7 @@ class MotionPlotUI:
         _require_widgets()
         joint_labels = self._joint_labels()
         joint_opts = [(label, index) for index, label in enumerate(joint_labels)]
-        frame_count = self.document.frame_count
+        frame_count = self.motion.frame_count
 
         range_slider = widgets.IntRangeSlider(
             value=[0, frame_count - 1],
@@ -103,7 +103,7 @@ class MotionPlotUI:
             if cache["key"] == key and cache["kin"] is not None:
                 return cache["kin"]
             kin = compute_world_kinematics(
-                self.document,
+                self.motion,
                 method=method_dd.value,
                 sg_window=int(sg_window.value),
                 sg_polyorder=int(sg_poly.value),
@@ -144,7 +144,7 @@ class MotionPlotUI:
 
         def render_tab0(*_) -> None:
             kwargs = {
-                "document": self.document,
+                "motion": self.motion,
                 "joint_indices": list(joints_ms0.value),
                 "kinematics": get_kin(),
                 "t_range": t_range(),
@@ -176,7 +176,7 @@ class MotionPlotUI:
 
         def render_tab1(*_) -> None:
             fig = plot_trajectory_planes(
-                self.document,
+                self.motion,
                 list(joints_ms1.value),
                 kinematics=get_kin(),
                 signals=("pos", "vel", "acc"),
@@ -207,7 +207,7 @@ class MotionPlotUI:
 
         def render_tab2(*_) -> None:
             kwargs = {
-                "document": self.document,
+                "motion": self.motion,
                 "joint_idx": int(joint_dd2.value),
                 "kinematics": get_kin(),
                 "t_range": t_range(),
@@ -268,12 +268,12 @@ class MotionPlotUI:
     def _joint_labels(self) -> list[str]:
         if self.joint_labels is not None:
             return [str(label) for label in self.joint_labels]
-        return list(self.document.joint_names)
+        return list(self.motion.hierarchy.joint_names)
 
 
 @dataclass
 class MotionCompareUI:
-    documents: list[BVHDocument] | tuple[BVHDocument, ...]
+    motions: list[Motion] | tuple[Motion, ...]
     clip_labels: Optional[list[str] | tuple[str, ...]] = None
     joint_labels: Optional[list[str] | tuple[str, ...]] = None
     method: str = "savgol"
@@ -284,19 +284,19 @@ class MotionCompareUI:
 
     def show(self) -> None:
         _require_widgets()
-        if len(self.documents) < 2:
-            raise ValueError("MotionCompareUI requires at least 2 documents.")
+        if len(self.motions) < 2:
+            raise ValueError("MotionCompareUI requires at least 2 motions.")
 
-        joint_count = len(self.documents[0].joints)
-        if any(len(document.joints) != joint_count for document in self.documents):
-            raise ValueError("All documents must have the same number of joints.")
+        joint_count = self.motions[0].hierarchy.joint_count
+        if any(motion.hierarchy.joint_count != joint_count for motion in self.motions):
+            raise ValueError("All motions must have the same number of joints.")
 
-        frame_count = min(document.frame_count for document in self.documents)
-        labels = _normalize_labels(len(self.documents), self.clip_labels)
+        frame_count = min(motion.frame_count for motion in self.motions)
+        labels = _normalize_labels(len(self.motions), self.clip_labels)
         joint_labels = (
             [str(label) for label in self.joint_labels]
             if self.joint_labels is not None
-            else list(self.documents[0].joint_names)
+            else list(self.motions[0].hierarchy.joint_names)
         )
         joint_opts = [(label, index) for index, label in enumerate(joint_labels)]
 
@@ -340,14 +340,14 @@ class MotionCompareUI:
                 return cache["kins"]
             kins = [
                 compute_world_kinematics(
-                    document,
+                    motion,
                     method=method_dd.value,
                     sg_window=int(sg_window.value),
                     sg_polyorder=int(sg_poly.value),
                     sg_mode=sg_mode.value,
                     prefilter=self.prefilter,
                 )
-                for document in self.documents
+                for motion in self.motions
             ]
             cache["key"] = key
             cache["kins"] = kins
@@ -369,7 +369,7 @@ class MotionCompareUI:
 
         def render_tab0(*_) -> None:
             kwargs = {
-                "documents": list(self.documents),
+                "motions": list(self.motions),
                 "joint_indices": list(joints_ms0.value),
                 "kinematics_results": get_kins(),
                 "clip_labels": labels,
@@ -397,7 +397,7 @@ class MotionCompareUI:
 
         def render_tab1(*_) -> None:
             fig = plot_trajectory_planes_multi(
-                list(self.documents),
+                list(self.motions),
                 list(joints_ms1.value),
                 kinematics_results=get_kins(),
                 clip_labels=labels,
@@ -420,7 +420,7 @@ class MotionCompareUI:
 
         def render_tab2(*_) -> None:
             kwargs = {
-                "documents": list(self.documents),
+                "motions": list(self.motions),
                 "joint_idx": int(joint_dd2.value),
                 "kinematics_results": get_kins(),
                 "clip_labels": labels,
@@ -536,5 +536,5 @@ def _normalize_labels(
     if labels is None:
         return [f"clip_{index}" for index in range(count)]
     if len(labels) != count:
-        raise ValueError("clip_labels length must match number of documents.")
+        raise ValueError("clip_labels length must match number of motions.")
     return [str(label) for label in labels]
