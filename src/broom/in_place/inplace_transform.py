@@ -7,6 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
+from broom import Motion
 from broom.bvh.in_place.schemas import InPlacePCAResult
 from broom.bvh.in_place.config import (
     DEFAULT_BODY_JOINT_WEIGHTS,
@@ -17,14 +18,16 @@ from broom.bvh.in_place.config import (
     PCA_SOURCE_ROOT,
 )
 
-from broom.bvh.math_helpers import principal_direction
-from broom.bvh.kinematics import compute_global_positions
-from broom.bvh.channels import (position_channel_dimension,
-                                                  root_points,
-                                                  select_body_joints,
-                                                  weighted_body_points)
-from broom.bvh.io import load_bvh_document, write_bvh_with_root_channels
-from broom.bvh.foot_lock import apply_root_foot_lock
+from broom.math_helpers import principal_direction
+from broom.kinematics import compute_global_positions
+from broom.channels import (
+    position_channel_dimension,
+    root_points,
+    select_body_joints,
+    weighted_body_points
+)
+from broom.io import load_bvh, write_bvh
+from broom.foot_lock import apply_root_foot_lock
 
 from broom.bvh.in_place.utils import (
     remove_smoothed_pca_trend,
@@ -103,28 +106,36 @@ class InPlaceConverter:
     ) -> InPlacePCAResult:
         """Read a BVH file, transform it in-place, and write a new BVH."""
 
-        document = load_bvh_document(input_path, root_name=self.root_name)
-        root_points, result_data = self.transform_document(document=document, foot_lock=foot_lock)
+        motion = load_bvh(input_path, root_name=self.root_name)
+        root_points, result_data = self.transform_motion(
+            motion=motion,
+            foot_lock=foot_lock,
+        )
         axis_to_column = {
             axis: index for index, axis in enumerate(DEFAULT_ROOT_AXES)
         }
         root_channel_values = np.column_stack(
             [root_points[:, axis_to_column[axis]] for axis in self.axes]
         )
-        write_bvh_with_root_channels(
-            document=document,
-            output_path=output_path,
-            root_channel_values=root_channel_values,
-            axes=self.axes,
+        values = motion.values.copy()
+        root_name = motion.hierarchy.root_name
+        root_channel_indices = [
+            motion.hierarchy.channel_index(root_name, axis) for axis in self.axes
+        ]
+        values[:, root_channel_indices] = root_channel_values
+        output_motion = motion.with_values(values)
+        write_bvh(
+            output_motion,
+            output_path,
             precision=self.precision,
         )
 
         return InPlacePCAResult(
             input_path=Path(input_path),
             output_path=Path(output_path),
-            root_name=document.root_name,
+            root_name=motion.hierarchy.root_name,
             source=self.source,
-            frames=document.motion_values.shape[0],
+            frames=motion.frame_count,
             dominant_direction=(
                 float(result_data["direction"][0]),
                 float(result_data["direction"][1]),
@@ -134,14 +145,16 @@ class InPlaceConverter:
             foot_lock=foot_lock,
         )
 
-    def transform_document(self, document, foot_lock: bool) -> tuple[np.ndarray, dict]:
-        """Transform an already parsed BVH document.
+    def transform_motion(
+        self, motion: Motion, foot_lock: bool
+    ) -> tuple[np.ndarray, dict]:
+        """Transform an already loaded Motion.
 
-        :param document: The BVHDocument to transform.
+        :param motion: Motion whose root translation is transformed.
         """
 
         original_root_points = root_points(
-            document=document,
+            motion=motion,
             axes=DEFAULT_ROOT_AXES,
         )
         global_positions = None
@@ -154,7 +167,7 @@ class InPlaceConverter:
                 sensor_points,
                 global_positions,
                 selected_joints,
-            ) = self._body_sensor_data(document)
+            ) = self._body_sensor_data(motion)
 
         direction, explained_ratio = principal_direction(sensor_points)
         transformed_root_points = remove_smoothed_pca_trend(
@@ -167,12 +180,12 @@ class InPlaceConverter:
 
         if foot_lock:
             if global_positions is None:
-                global_positions = compute_global_positions(document)
+                global_positions = compute_global_positions(motion)
             transformed_root_points = apply_root_foot_lock(
                 root_points=transformed_root_points,
                 original_root_points=original_root_points,
                 global_positions=global_positions,
-                joints=document.joints,
+                hierarchy=motion.hierarchy,
                 blend_frames=self.foot_blend_frames,
                 height_threshold=self.foot_height_threshold,
                 velocity_threshold=self.foot_velocity_threshold,
@@ -185,13 +198,13 @@ class InPlaceConverter:
         }
 
     def _body_sensor_data(
-        self, document
+        self, motion: Motion
     ) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
         """Build weighted body sensor points and metadata for PCA."""
 
-        global_positions = compute_global_positions(document)
+        global_positions = compute_global_positions(motion)
         selected_indices, weights = select_body_joints(
-            joints=document.joints,
+            joints=motion.hierarchy.joints,
             weighted_targets=self.body_joint_weights,
             use_all_joints=self.use_all_joints,
         )
@@ -204,6 +217,6 @@ class InPlaceConverter:
             ),
         )
         selected_joints = tuple(
-            document.joints[int(index)].name for index in selected_indices
+            motion.hierarchy.joints[int(index)].name for index in selected_indices
         )
         return sensor_points, global_positions, selected_joints

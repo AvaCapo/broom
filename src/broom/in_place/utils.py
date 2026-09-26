@@ -7,9 +7,7 @@ from typing import Sequence
 import numpy as np
 
 
-from broom.bvh.math_helpers import (
-    moving_average,
-)
+from broom.math_helpers import moving_average
 
 
 def validate_axis_set(
