@@ -9,9 +9,7 @@ from typing import Sequence
 
 import numpy as np
 
-from broom.hierarchy import Hierarchy, Joint
-from broom.motion import Motion
-
+from broom import Hierarchy, Joint, Motion
 
 def _parse_finite_float(token: str, *, context: str) -> float:
     """Parse one finite BVH number."""

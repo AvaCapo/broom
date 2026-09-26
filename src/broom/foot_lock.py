@@ -1,15 +1,18 @@
 """Foot contact and foot-lock helpers for BVH motion processing."""
 
+#TODO: convert to generic functions; keep some default settings as a custom case workflow
+# and maybe move this file to the ops module?
+
 from __future__ import annotations
 
 from typing import Sequence
 
 import numpy as np
 
-from broom.bvh.channels import joint_name_matches
-from broom.bvh.math_helpers import smoothstep
-from broom.bvh.ops.skeleton import estimate_skeleton_height
-from broom.bvh.schemas import BVHJoint
+from broom import Hierarchy, Joint
+from broom.channels import joint_name_matches
+from broom.math_helpers import smoothstep
+from broom.ops.skeleton_geometry import estimate_height
 
 DEFAULT_FOOT_JOINTS = {
     "left": ("LeftFoot", "LeftToe"),
@@ -21,10 +24,14 @@ def apply_root_foot_lock(
     root_points: np.ndarray,
     original_root_points: np.ndarray,
     global_positions: np.ndarray,
-    joints: Sequence[BVHJoint],
+    hierarchy: Hierarchy,
     blend_frames: int,
     height_threshold: float | None,
     velocity_threshold: float | None,
+    *,
+    up_axis: str = "Y",
+    floor_axes: Sequence[int] = (0, 2),
+    include_end_sites: bool = False,
 ) -> np.ndarray:
     """Apply foot locking to the root points based on detected foot contacts.
 
@@ -34,27 +41,33 @@ def apply_root_foot_lock(
         original root X/Z points before correction.
     :param global_positions: An array of shape (N, J, 3) representing the
         global positions of all joints.
-    :param joints: A sequence of BVHJoint representing the skeleton hierarchy.
+    :param hierarchy: Skeleton hierarchy matching ``global_positions``.
     :param blend_frames: The number of frames to blend the foot lock correction
         in and out. Even values are rounded up to the next odd value.
     :param height_threshold: height threshold for foot contact detection.
         If None, a default threshold based on the skeleton height will be used.
     :param velocity_threshold: velocity threshold for foot contact detection.
         If None, a default threshold based on the skeleton height will be used.
+    :param up_axis: Coordinate axis used to measure height above the floor.
+    :param floor_axes: Coordinate dimensions spanning the floor plane.
     """
-    foot_groups = find_foot_groups(joints)
+    foot_groups = find_foot_groups(hierarchy.joints)
     if not foot_groups:
         return root_points.copy()
 
-    skeleton_height = estimate_skeleton_height(joints)
+    skeleton_height = estimate_height(
+        hierarchy,
+        include_end_sites=include_end_sites,
+        up_axis=up_axis,
+    )
     contact_masks = detect_foot_contacts(
         global_positions=global_positions,
         foot_groups=foot_groups,
         skeleton_height=skeleton_height,
         height_threshold=height_threshold,
         velocity_threshold=velocity_threshold,
-        velocity_dimensions=(0, 2),
-        height_dimension=1,
+        velocity_dimensions=floor_axes,
+        height_dimension="XYZ".index(up_axis.upper()),
     )
     if not any(mask.any() for mask in contact_masks.values()):
         return root_points.copy()
@@ -66,9 +79,9 @@ def apply_root_foot_lock(
 
     for group_name, group_indices in foot_groups.items():
         mask = contact_masks[group_name]
-        foot_points = global_positions[:, group_indices, :][:, :, [0, 2]].mean(
-            axis=1
-        )
+        foot_points = global_positions[:, group_indices, :][
+            :, :, floor_axes
+        ].mean(axis=1)
         foot_points = foot_points + base_delta
 
         for start, end in contact_segments(mask):
@@ -100,10 +113,10 @@ def apply_root_foot_lock(
     )
     return corrected
 
-def find_foot_groups(joints: Sequence[BVHJoint]) -> dict[str, np.ndarray]:
+def find_foot_groups(joints: Sequence[Joint]) -> dict[str, np.ndarray]:
     """Identify foot joint groups based on the joint names.
 
-    :param joints: The list of joints to search through.
+    :param joints: The joints to search through.
     """
     groups = {}
     for group_name, target_names in DEFAULT_FOOT_JOINTS.items():
@@ -153,12 +166,12 @@ def detect_foot_contacts(
     height_limit = (
         float(height_threshold)
         if height_threshold is not None
-        else max(0.035 * skeleton_height, 0.02)
+        else max(0.035 * skeleton_height, 0.02) #TODO: qualify magic numbers
     )
     velocity_limit = (
         float(velocity_threshold)
         if velocity_threshold is not None
-        else max(0.025 * skeleton_height, 0.015)
+        else max(0.025 * skeleton_height, 0.015) #TODO: qualify magic numbers
     )
 
     masks = {}
@@ -196,8 +209,8 @@ def estimate_floor_height(
     min_heights = global_positions[:, foot_indices, height_dimension].min(
         axis=1
     )
-    low = int(0.05 * len(min_heights))
-    high = max(low + 1, int(0.25 * len(min_heights)))
+    low = int(0.05 * len(min_heights)) #TODO: qualify magic numbers
+    high = max(low + 1, int(0.25 * len(min_heights))) #TODO: qualify magic numbers
     sorted_heights = np.sort(min_heights)
     return float(sorted_heights[low:high].mean())
 

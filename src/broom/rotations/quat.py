@@ -3,7 +3,7 @@
 from __future__ import annotations
 import numpy as np
 
-from broom.bvh.math_helpers import normalize_vectors
+from broom.math_helpers import normalize_vectors
 
 def from_scaled_angle_axis(scaledaxis: np.ndarray) -> np.ndarray:
     """
@@ -246,7 +246,7 @@ def to_scaled_angle_axis(quaternions: np.ndarray) -> np.ndarray:
     return angle * axis
 
 
-def to_angle_axis(quaternions: np.ndarray) -> np.ndarray:
+def to_angle_axis(quaternions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Quaternion to scaled axis angle representation.
 
@@ -336,7 +336,7 @@ def mul_vec(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     return v + q[..., 0][..., np.newaxis] * t + _fast_cross(q[..., 1:], t)
 
 
-def mul(q0: np.array, q1: np.array) -> np.array:
+def mul(q0: np.ndarray, q1: np.ndarray) -> np.ndarray:
     """
     Multiply two quaternions.
 

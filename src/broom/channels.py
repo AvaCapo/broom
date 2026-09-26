@@ -1,4 +1,6 @@
 """Channel and joint selection helpers for Broom motions."""
+#TODO: consider rewriting these functions as Hierarchy class properties 
+# or derive explicitely where such logic is needed from existing class methods
 
 from __future__ import annotations
 from typing import Sequence

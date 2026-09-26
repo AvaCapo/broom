@@ -6,7 +6,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from broom import Hierarchy, Motion
-from broom.bvh.channels import position_channel_dimension
+from broom.channels import position_channel_dimension
 from broom.kinematics import compute_global_transforms
 from broom.rotations.euler import axis_rotation_matrices, wrap_degrees
 
