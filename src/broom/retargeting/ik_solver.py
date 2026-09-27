@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -14,8 +15,28 @@ except ImportError as exc:  # pragma: no cover - depends on optional extra
         "Install it with `python -m pip install 'broom[ik]'`."
     ) from exc
 
-from broom.bvh.kinematics import compute_global_positions
-from broom.bvh.schemas import BVHDocument
+from broom import Hierarchy, Motion
+from broom.kinematics import compute_global_positions
+from broom.joint_limits import JointLimit, resolve_joint_limit
+
+
+def resolve_hierarchy_joint_limits(
+    hierarchy: Hierarchy,
+    joint_limits: Mapping[str, Mapping[str, Any]] | None,
+) -> dict[str, JointLimit]:
+    """Resolve preset limits for the joints in a hierarchy.
+
+    The returned mapping is keyed by hierarchy joint name and contains only
+    joints with a resolved limit. Loading BVH data does not invoke this helper;
+    callers choose and pass a preset explicitly.
+    """
+
+    resolved = {}
+    for joint in hierarchy.joints:
+        limit = resolve_joint_limit(joint.name, joint.channels, joint_limits)
+        if limit.dof:
+            resolved[joint.name] = limit
+    return resolved
 
 
 
@@ -58,7 +79,7 @@ class TorchBVHIKSolver:
 
     def __init__(
         self,
-        document: BVHDocument,
+        hierarchy: Hierarchy,
         objectives: tuple[
             IKPositionObjective | IKJointLimitObjective | IKRegularizationObjective,
             ...,
@@ -72,7 +93,7 @@ class TorchBVHIKSolver:
         dtype: str = "float64",
         clamp_to_limits: bool = True,
     ) -> None:
-        self.document = document
+        self.hierarchy = hierarchy
         self.objectives = tuple(objectives)
         self.max_iterations = int(max_iterations)
         self.history_size = int(history_size)
@@ -82,9 +103,9 @@ class TorchBVHIKSolver:
         self.device = torch.device(device or "cpu")
         self.dtype = getattr(torch, dtype)
         self.clamp_to_limits = bool(clamp_to_limits)
-        self.rotation_channels = _rotation_channel_indices(document)
-        self._hierarchy = _TorchHierarchy.from_document(
-            document=document,
+        self.rotation_channels = _rotation_channel_indices(hierarchy)
+        self._hierarchy = _TorchHierarchy.from_hierarchy(
+            hierarchy=hierarchy,
             device=self.device,
             dtype=self.dtype,
         )
@@ -201,9 +222,8 @@ class TorchBVHIKSolver:
 
 
 def optimize_retargeted_motion_with_ik(
-    source_document: BVHDocument,
-    target_document: BVHDocument,
-    target_motion: np.ndarray,
+    source_motion: Motion,
+    target_motion: Motion,
     source_to_target: dict[str, str],
     root_scale: float,
     iterations: int = 20,
@@ -213,19 +233,23 @@ def optimize_retargeted_motion_with_ik(
     history_size: int = 10,
     device: str | None = None,
     clamp_to_limits: bool = True,
-) -> np.ndarray:
-    """Run LBFGS IK after FK-style retargeting."""
+    *,
+    joint_limits: Mapping[str, JointLimit] | None = None,
+) -> Motion:
+    """Run LBFGS IK after FK-style retargeting.
 
-    if target_motion.shape[0] != source_document.frame_count:
+    ``joint_limits`` maps target joint names to explicitly selected bounds.
+    """
+
+    if target_motion.frame_count != source_motion.frame_count:
         raise ValueError(
             "IK target motion must have the same frame count as the source "
-            f"document: got {target_motion.shape[0]} and "
-            f"{source_document.frame_count}."
+            f"motion: got {target_motion.frame_count} and "
+            f"{source_motion.frame_count}."
         )
 
     position_objective = build_position_objective(
-        source_document=source_document,
-        target_document=target_document,
+        source_motion=source_motion,
         target_motion=target_motion,
         source_to_target=source_to_target,
         root_scale=root_scale,
@@ -238,62 +262,59 @@ def optimize_retargeted_motion_with_ik(
         objectives.append(position_objective)
     objectives.extend(
         build_joint_limit_objectives(
-            target_document=target_document,
+            hierarchy=target_motion.hierarchy,
+            joint_limits=joint_limits,
             weight=limit_weight,
         )
     )
 
-    rotation_channels = _rotation_channel_indices(target_document)
+    rotation_channels = _rotation_channel_indices(target_motion.hierarchy)
     if rotation_channels and regularization_weight > 0.0:
         objectives.append(
             IKRegularizationObjective(
                 channel_indices=tuple(rotation_channels),
-                seed_values=np.asarray(target_motion[:, rotation_channels]),
+                seed_values=np.asarray(target_motion.values[:, rotation_channels]),
                 weight=regularization_weight,
             )
         )
 
     if not objectives:
-        return np.asarray(target_motion, dtype=np.float64).copy()
+        return target_motion.with_values(target_motion.values)
 
     solver = TorchBVHIKSolver(
-        document=target_document,
+        hierarchy=target_motion.hierarchy,
         objectives=tuple(objectives),
         max_iterations=iterations,
         history_size=history_size,
         device=device,
         clamp_to_limits=clamp_to_limits,
     )
-    return solver.step(target_motion)
+    return target_motion.with_values(solver.step(target_motion.values))
 
 
 def build_position_objective(
-    source_document: BVHDocument,
-    target_document: BVHDocument,
-    target_motion: np.ndarray,
+    source_motion: Motion,
+    target_motion: Motion,
     source_to_target: dict[str, str],
     root_scale: float,
     weight: float,
 ) -> IKPositionObjective | None:
     """Create a source-to-target global-position matching objective."""
 
-    source_positions = compute_global_positions(source_document)
-    target_seed_document = _document_with_motion(
-        document=target_document,
-        motion_values=target_motion,
-    )
-    target_seed_positions = compute_global_positions(target_seed_document)
-    source_root_index = source_document.joint_index[source_document.root_name]
-    target_root_index = target_document.joint_index[target_document.root_name]
+    source_positions = compute_global_positions(source_motion)
+    target_seed_positions = compute_global_positions(target_motion)
+    source_root_index = source_motion.hierarchy.root
+    target_root_index = target_motion.hierarchy.root
     source_root = source_positions[:, source_root_index : source_root_index + 1, :]
     target_root = target_seed_positions[:, target_root_index : target_root_index + 1, :]
 
     target_indices: list[int] = []
     targets: list[np.ndarray] = []
     for source_name, target_name in source_to_target.items():
-        source_index = source_document.joint_index.get(source_name)
-        target_index = target_document.joint_index.get(target_name)
-        if source_index is None or target_index is None:
+        try:
+            source_index = source_motion.hierarchy.joint_index(source_name)
+            target_index = target_motion.hierarchy.joint_index(target_name)
+        except KeyError:
             continue
         target_indices.append(target_index)
         target_positions = target_root[:, 0, :] + (
@@ -311,13 +332,14 @@ def build_position_objective(
 
 
 def build_joint_limit_objectives(
-    target_document: BVHDocument,
+    hierarchy: Hierarchy,
+    joint_limits: Mapping[str, JointLimit] | None,
     weight: float,
 ) -> tuple[IKJointLimitObjective, ...]:
     """Return one joint-limit objective per constrained BVH joint."""
 
     objectives = []
-    for joint in target_document.joints:
+    for joint_index, joint in enumerate(hierarchy.joints):
         rotation_offsets = [
             offset
             for offset, channel in enumerate(joint.channels)
@@ -325,18 +347,22 @@ def build_joint_limit_objectives(
         ]
         if not rotation_offsets:
             continue
-        if not joint.min_values or not joint.max_values:
+        limit = None if joint_limits is None else joint_limits.get(joint.name)
+        if limit is None or not limit.min_values or not limit.max_values:
             continue
-        if len(joint.min_values) != len(rotation_offsets):
+        if len(limit.min_values) != len(rotation_offsets):
             continue
-        if len(joint.max_values) != len(rotation_offsets):
+        if len(limit.max_values) != len(rotation_offsets):
             continue
-        channels = tuple(joint.channel_start + offset for offset in rotation_offsets)
+        channels = tuple(
+            hierarchy.channel_start(joint_index) + offset
+            for offset in rotation_offsets
+        )
         objectives.append(
             IKJointLimitObjective(
                 channel_indices=channels,
-                min_values=tuple(float(value) for value in joint.min_values),
-                max_values=tuple(float(value) for value in joint.max_values),
+                min_values=tuple(float(value) for value in limit.min_values),
+                max_values=tuple(float(value) for value in limit.max_values),
                 weight=weight,
             )
         )
@@ -353,23 +379,26 @@ class _TorchHierarchy:
     dtype: object
 
     @classmethod
-    def from_document(
+    def from_hierarchy(
         cls,
         *,
-        document: BVHDocument,
+        hierarchy: Hierarchy,
         device: object,
         dtype: object,
     ) -> "_TorchHierarchy":
         offsets = torch.as_tensor(
-            np.stack([joint.offset for joint in document.joints], axis=0),
+            np.stack([joint.offset for joint in hierarchy.joints], axis=0),
             dtype=dtype,
             device=device,
         )
         return cls(
-            parent_indices=tuple(joint.parent for joint in document.joints),
+            parent_indices=tuple(joint.parent for joint in hierarchy.joints),
             offsets=offsets,
-            channel_starts=tuple(joint.channel_start for joint in document.joints),
-            channels=tuple(tuple(joint.channels) for joint in document.joints),
+            channel_starts=tuple(
+                hierarchy.channel_start(index)
+                for index in range(hierarchy.joint_count)
+            ),
+            channels=tuple(tuple(joint.channels) for joint in hierarchy.joints),
             device=device,
             dtype=dtype,
         )
@@ -463,29 +492,5 @@ def _axis_dimension(axis: str) -> int:
     return {"X": 0, "Y": 1, "Z": 2}[axis]
 
 
-def _rotation_channel_indices(document: BVHDocument) -> list[int]:
-    indices = []
-    for joint in document.joints:
-        for offset, channel in enumerate(joint.channels):
-            if channel.endswith("rotation"):
-                indices.append(joint.channel_start + offset)
-    return indices
-
-
-def _document_with_motion(
-    document: BVHDocument,
-    motion_values: np.ndarray,
-) -> BVHDocument:
-    return BVHDocument(
-        path=document.path,
-        prefix_lines=document.prefix_lines,
-        motion_rows=tuple(),
-        motion_values=np.asarray(motion_values, dtype=np.float64),
-        joints=document.joints,
-        total_channels=document.total_channels,
-        root_name=document.root_name,
-        root_channels=document.root_channels,
-        frame_time=document.frame_time,
-        declared_frames=int(motion_values.shape[0]),
-    )
-
+def _rotation_channel_indices(hierarchy: Hierarchy) -> list[int]:
+    return list(hierarchy.rotation_channel_indices())

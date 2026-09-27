@@ -1,4 +1,4 @@
-"""Joint mapping helpers for BVH retargeting."""
+"""Joint mapping helpers for skeleton retargeting."""
 
 from __future__ import annotations
 
@@ -6,32 +6,32 @@ import json
 from pathlib import Path
 import re
 
-from broom.bvh.channels import joint_name_matches
-from broom.bvh.schemas import BVHDocument
-from broom.bvh.retargeting.schemas import JointMatch, MappingResult
+from broom.channels import joint_name_matches
+from broom import Hierarchy
+from broom.retargeting.schemas import JointMatch, MappingResult
 
 
 def build_joint_mapping(
-    source_document: BVHDocument,
-    target_document: BVHDocument,
+    source_hierarchy: Hierarchy,
+    target_hierarchy: Hierarchy,
     joint_map: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Return a source-to-target mapping for two BVH documents.
+    """Return a source-to-target mapping for two hierarchies.
 
     Explicit entries win. Remaining joints are matched by normalized names and
     the namespace-tolerant matcher already used elsewhere in the BVH package.
     """
 
     return map_joints(
-        source_document=source_document,
-        target_document=target_document,
+        source_hierarchy=source_hierarchy,
+        target_hierarchy=target_hierarchy,
         joint_map=joint_map,
     ).mapping
 
 
 def map_joints(
-    source_document: BVHDocument,
-    target_document: BVHDocument,
+    source_hierarchy: Hierarchy,
+    target_hierarchy: Hierarchy,
     joint_map: dict[str, str] | None = None,
     min_score: float = 0.65,
 ) -> MappingResult:
@@ -43,14 +43,14 @@ def map_joints(
     """
 
     mapping, explicit_matches = _validate_explicit_mapping(
-        source_document=source_document,
-        target_document=target_document,
+        source_hierarchy=source_hierarchy,
+        target_hierarchy=target_hierarchy,
         joint_map=joint_map or {},
     )
 
     used_targets = set(mapping.values())
-    source_names = source_document.joint_names
-    target_names = target_document.joint_names
+    source_names = source_hierarchy.joint_names
+    target_names = target_hierarchy.joint_names
     source_order = {name: index for index, name in enumerate(source_names)}
     matches = list(explicit_matches)
 
@@ -78,8 +78,8 @@ def map_joints(
     return MappingResult(
         mapping=mapping,
         matches=tuple(sorted(matches, key=lambda match: source_order[match.source])),
-        unmapped_sources=unmapped_sources(source_document, mapping),
-        unmapped_targets=unmapped_targets(target_document, mapping),
+        unmapped_sources=unmapped_sources(source_hierarchy, mapping),
+        unmapped_targets=unmapped_targets(target_hierarchy, mapping),
     )
 
 
@@ -145,35 +145,35 @@ def load_joint_mapping(path: str | Path) -> dict[str, str]:
 
 
 def unmapped_sources(
-    source_document: BVHDocument,
+    source_hierarchy: Hierarchy,
     source_to_target: dict[str, str],
 ) -> tuple[str, ...]:
     """Return source joints with no target mapping."""
 
     return tuple(
-        name for name in source_document.joint_names if name not in source_to_target
+        name for name in source_hierarchy.joint_names if name not in source_to_target
     )
 
 
 def unmapped_targets(
-    target_document: BVHDocument,
+    target_hierarchy: Hierarchy,
     source_to_target: dict[str, str],
 ) -> tuple[str, ...]:
     """Return target joints with no source mapping."""
 
     mapped_targets = set(source_to_target.values())
     return tuple(
-        name for name in target_document.joint_names if name not in mapped_targets
+        name for name in target_hierarchy.joint_names if name not in mapped_targets
     )
 
 
 def _validate_explicit_mapping(
-    source_document: BVHDocument,
-    target_document: BVHDocument,
+    source_hierarchy: Hierarchy,
+    target_hierarchy: Hierarchy,
     joint_map: dict[str, str],
 ) -> tuple[dict[str, str], tuple[JointMatch, ...]]:
-    source_names = set(source_document.joint_names)
-    target_names = set(target_document.joint_names)
+    source_names = set(source_hierarchy.joint_names)
+    target_names = set(target_hierarchy.joint_names)
     mapping = {}
     matches = []
 

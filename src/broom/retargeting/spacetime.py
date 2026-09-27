@@ -1,4 +1,4 @@
-"""Space-time retargeting for BVH skeletons with identical topology.
+"""Space-time retargeting for skeletons with identical topology.
 
 This module implements the initial algorithm from Gleicher (1998): the source
 motion is re-applied to a target with different segment lengths, then a cubic
@@ -8,7 +8,6 @@ B-spline displacement is optimized over the complete clip.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 
 import numpy as np
 from scipy.interpolate import BSpline
@@ -17,12 +16,16 @@ from scipy.optimize import OptimizeResult, least_squares
 from scipy.sparse import coo_matrix, csr_matrix, diags, vstack
 from scipy.spatial.transform import Rotation
 
-from broom.bvh.kinematics import compute_global_positions, compute_global_transforms, axis_rotation_matrices
-from broom.bvh.rotations.rotvec import right_jacobian
-from broom.bvh.ops.motion import with_motion_values
-from broom.bvh.retargeting.root_motion import skeleton_scale
-from broom.bvh.retargeting.rotation_transfer import matrices_to_euler_near_reference
-from broom.bvh.schemas import BVHDocument
+from broom import Hierarchy, Motion
+from broom.kinematics import (
+    _decode_local_transforms,
+    compute_global_positions,
+    compute_global_transforms_from_local,
+)
+from broom.rotations.euler import axis_rotation_matrices
+from broom.rotations.rotvec import right_jacobian
+from broom.retargeting.root_motion import skeleton_scale
+from broom.retargeting.rotation_transfer import matrices_to_euler_near_reference
 
 
 # 5 mm is a practical default positional error for human animation in meters,
@@ -205,8 +208,8 @@ def euler_rotvec_jacobian(
 
 
 def retarget_motion_spacetime(
-    source_document: BVHDocument,
-    target_document: BVHDocument,
+    source_motion: Motion,
+    target_motion: Motion,
     constraints: Sequence[Mapping[str, object]],
     *,
     scale: float | None = None,
@@ -226,11 +229,11 @@ def retarget_motion_spacetime(
     Three-axis joints use R_initial @ Exp(phi), with XYZ rotvec coefficients
     in radians. One-axis joints retain their hinge axis; two-axis joints are
     rejected rather than silently gaining a degree of freedom. Root translation
-    coefficients use document length units. The three slots formerly occupied
+    coefficients use target motion length units. The three slots formerly occupied
     by Euler channels now mean rotvec X/Y/Z, independent of BVH channel order.
     parameter_weights and control_weight penalize these new units; old degree
     weights are NOT automatically reinterpreted as an angular distance metric.
-    Output motion_values remain BVH Euler degrees. Euler joint limits also remain
+    Output Motion values remain BVH Euler degrees. Euler joint limits also remain
     in degrees, on the branch nearest the initial motion.
 
     ``constraints`` is a sequence of plain dictionaries. Each dictionary uses
@@ -269,11 +272,11 @@ def retarget_motion_spacetime(
     scales both this residual and its analytic Jacobian.
 
     The result is SciPy's :class:`~scipy.optimize.OptimizeResult` with extra
-    attributes: ``document``, ``motion_values``, ``initial_motion_values``,
+    attributes: ``motion``, ``initial_motion_values``,
     ``control_points``, ``constraint_residuals``, and ``scale``.
     """
 
-    if source_document.frame_count < 2:
+    if source_motion.frame_count < 2:
         raise ValueError("Space-time retargeting requires at least two source frames.")
     if control_point_spacing <= 0:
         raise ValueError("control_point_spacing must be positive.")
@@ -281,13 +284,20 @@ def retarget_motion_spacetime(
         raise ValueError("control_weight cannot be negative.")
     if not np.isfinite(constraint_tolerance) or constraint_tolerance <= 0.0:
         raise ValueError("constraint_tolerance must be finite and positive.")
-    if len(source_document.joints) != len(target_document.joints):
+    source_hierarchy = source_motion.hierarchy
+    target_hierarchy = target_motion.hierarchy
+    if source_hierarchy.joint_count != target_hierarchy.joint_count:
         raise ValueError("Source and target skeletons have different joint counts.")
-    if source_document.total_channels != target_document.total_channels:
+    if source_hierarchy.total_channels != target_hierarchy.total_channels:
         raise ValueError("Source and target skeletons have different channel counts.")
 
-    for source_joint, target_joint in zip(source_document.joints, target_document.joints):
-        if source_joint.channel_start != target_joint.channel_start:
+    for joint_index, (source_joint, target_joint) in enumerate(
+        zip(source_hierarchy.joints, target_hierarchy.joints)
+    ):
+        if (
+            source_hierarchy.channel_start(joint_index)
+            != target_hierarchy.channel_start(joint_index)
+        ):
             raise ValueError("Source and target channel starts differ.")
         if source_joint.parent != target_joint.parent:
             raise ValueError(
@@ -298,17 +308,18 @@ def retarget_motion_spacetime(
                 f"Joint {source_joint.name!r} has different channels in the target."
             )
 
-    frame_count = source_document.frame_count
-    root_joint = next(joint for joint in target_document.joints if joint.parent == -1)
+    frame_count = source_motion.frame_count
+    root_joint = target_hierarchy.root_joint
     root_position_channels = {
-        channel[0]: root_joint.channel_start + channel_offset
+        channel[0]: target_hierarchy.channel_start(target_hierarchy.root)
+        + channel_offset
         for channel_offset, channel in enumerate(root_joint.channels)
         if channel.endswith("position")
     }
     variable_indices = np.asarray(
         [
-            joint.channel_start + channel_offset
-            for joint in target_document.joints
+            target_hierarchy.channel_start(joint_index) + channel_offset
+            for joint_index, joint in enumerate(target_hierarchy.joints)
             for channel_offset, channel in enumerate(joint.channels)
             if channel.endswith("rotation")
             or (joint.parent == -1 and channel.endswith("position"))
@@ -331,12 +342,12 @@ def retarget_motion_spacetime(
             raise ValueError("parameter_weights cannot contain negative values.")
 
     resolved_scale = (
-        skeleton_scale(source_document, target_document)
+        skeleton_scale(source_hierarchy, target_hierarchy)
         if scale is None
         else float(scale)
     )
-    initial_motion = source_document.motion_values.copy()
-    if not np.all(np.isfinite(source_document.motion_values)):
+    initial_motion = source_motion.values.copy()
+    if not np.all(np.isfinite(source_motion.values)):
         raise ValueError("Source motion must contain finite values.")
     if not np.isfinite(resolved_scale) or resolved_scale <= 0:
         raise ValueError("scale must be finite and positive.")
@@ -360,11 +371,9 @@ def retarget_motion_spacetime(
     # Estimate the translation center from explicitly positioned features.
     translation = np.zeros((frame_count, 3), dtype=np.float64)
     translation_weights = np.zeros((frame_count, 3), dtype=np.float64)
-    scaled_positions = compute_global_positions(
-        replace(target_document, motion_values=initial_motion)
-    )
+    scaled_positions = compute_global_positions(target_motion.with_values(initial_motion))
     # Validate before centering; position targets and axes share the residual API.
-    _constraint_residuals(target_document, initial_motion, scaled_positions, constraints)
+    _constraint_residuals(target_hierarchy, initial_motion, scaled_positions, constraints)
     for constraint in constraints:
         if constraint.get("type") != "position":
             continue
@@ -372,7 +381,7 @@ def retarget_motion_spacetime(
         coordinates = _coordinate_indices(constraint.get("axes", "XYZ"))
         positions = _position_targets(constraint["positions"], frames.size, coordinates)
         weight = float(constraint.get("weight", 1.0))
-        joint_index = target_document.joint_index[str(constraint["joint"])]
+        joint_index = target_hierarchy.joint_index(str(constraint["joint"]))
         for column, axis in enumerate(coordinates):
             np.add.at(
                 translation[:, axis], frames,
@@ -414,7 +423,7 @@ def retarget_motion_spacetime(
     ).toarray()
     control_count = basis.shape[1]
 
-    parents = np.array([joint.parent for joint in target_document.joints], dtype=int)
+    parents = np.array([joint.parent for joint in target_hierarchy.joints], dtype=int)
     if np.count_nonzero(parents == -1) != 1 or any(p >= j or p < -1 for j, p in enumerate(parents)):
         raise ValueError("Expected one root and parent-before-child hierarchy.")
     parameter_count = variable_indices.size
@@ -426,11 +435,11 @@ def retarget_motion_spacetime(
         np.eye(3), (frame_count, len(parents), 3, 3)
     ).copy()
     rotation_data = {}
-    for j, joint in enumerate(target_document.joints):
+    for j, joint in enumerate(target_hierarchy.joints):
         channels = []
         order = ""
         for offset, name in enumerate(joint.channels):
-            channel = joint.channel_start + offset
+            channel = target_hierarchy.channel_start(j) + offset
             if channel in slot_for_channel:
                 slot = slot_for_channel[channel]
                 variable_joints[slot] = j
@@ -468,9 +477,9 @@ def retarget_motion_spacetime(
         if spec["type"] == "relational":
             for field in ("joint_a", "joint_b"):
                 joint_name = str(spec[field])
-                if joint_name not in target_document.joint_index:
+                if joint_name not in target_hierarchy.joint_names:
                     raise ValueError(f"{name}: unknown {field} {joint_name!r}.")
-                spec[field + "_index"] = target_document.joint_index[joint_name]
+                spec[field + "_index"] = target_hierarchy.joint_index(joint_name)
             values = np.asarray(spec["source_normalized_distance"], dtype=float)
             spec["source_normalized_distance"] = np.broadcast_to(values, spec["frames"].shape)
             spec["activation"] = np.broadcast_to(
@@ -484,7 +493,7 @@ def retarget_motion_spacetime(
                     or spec["target_path_length"] <= 0):
                 raise ValueError(f"{name}: relational inputs must be finite and valid.")
         else:
-            spec["joint_index"] = target_document.joint_index[str(spec["joint"])]
+            spec["joint_index"] = target_hierarchy.joint_index(str(spec["joint"]))
         if spec["type"] in ("position", "stationary"):
             spec["axes"] = spec.get("axes", "XYZ")
             spec["coordinates"] = _coordinate_indices(spec["axes"])
@@ -519,8 +528,13 @@ def retarget_motion_spacetime(
                 phi = phi * np.eye(3)["XYZ".index(order)]
             corrections[j] = phi
             local[:, j] = initial_local[:, j] @ Rotation.from_rotvec(phi).as_matrix()
-        positions, global_rotations = compute_global_transforms(
-            replace(target_document, motion_values=motion_values), local_rotations=local
+        local_translations, _ = _decode_local_transforms(
+            target_motion.with_values(motion_values)
+        )
+        positions, global_rotations = compute_global_transforms_from_local(
+            target_hierarchy,
+            local_rotations=local,
+            local_translations=local_translations,
         )
         world_axes = np.broadcast_to(
             translation_axes, (frame_count, parameter_count, 3)
@@ -673,10 +687,9 @@ def retarget_motion_spacetime(
         motion_values[:, channels] = np.where(
             unchanged[:, None], initial_motion[:, channels], np.rad2deg(angles)
         )
-    solver_result.document = with_motion_values(
-        target_document, motion_values, frame_time=source_document.frame_time
+    solver_result.motion = Motion(
+        target_hierarchy, motion_values, source_motion.frame_time
     )
-    solver_result.motion_values = solver_result.document.motion_values
     solver_result.initial_motion_values = initial_motion
     solver_result.control_points = control_points
     solver_result.constraint_residuals = blocks
@@ -688,18 +701,18 @@ def retarget_motion_spacetime(
     parameter_names = [None] * parameter_count
     for slot in np.flatnonzero(translation_mask):
         parameter_names[slot] = (
-            target_document.joints[variable_joints[slot]].name,
+            target_hierarchy.joints[variable_joints[slot]].name,
             "translation_" + "XYZ"[np.argmax(translation_axes[slot])],
         )
     for j, (_, slots, order, _) in rotation_data.items():
         for slot, axis in zip(slots, "XYZ" if len(slots) == 3 else order):
-            parameter_names[slot] = (target_document.joints[j].name, "rotvec_" + axis)
+            parameter_names[slot] = (target_hierarchy.joints[j].name, "rotvec_" + axis)
     solver_result.parameter_names = tuple(parameter_names)
     return solver_result
 
 
 def _constraint_residuals(
-    document: BVHDocument,
+    hierarchy: Hierarchy,
     motion_values: np.ndarray,
     global_positions: np.ndarray,
     constraints: Sequence[Mapping[str, object]],
@@ -717,10 +730,15 @@ def _constraint_residuals(
         if not np.isfinite(weight) or weight < 0.0:
             raise ValueError(f"Constraint {name!r} must have a finite nonnegative weight.")
         if constraint_type == "relational":
-            joint_a = document.joint_index.get(str(constraint.get("joint_a", "")))
-            joint_b = document.joint_index.get(str(constraint.get("joint_b", "")))
-            if joint_a is None or joint_b is None:
+            joint_a_name = str(constraint.get("joint_a", ""))
+            joint_b_name = str(constraint.get("joint_b", ""))
+            if (
+                joint_a_name not in hierarchy.joint_names
+                or joint_b_name not in hierarchy.joint_names
+            ):
                 raise ValueError(f"Relational constraint {name!r} references an unknown endpoint.")
+            joint_a = hierarchy.joint_index(joint_a_name)
+            joint_b = hierarchy.joint_index(joint_b_name)
             source_distance = np.broadcast_to(
                 np.asarray(constraint["source_normalized_distance"], dtype=float), frames.shape
             )
@@ -734,11 +752,11 @@ def _constraint_residuals(
             ) * np.sqrt(activation)
             continue
         joint_name = str(constraint.get("joint", ""))
-        joint_index = document.joint_index.get(joint_name)
-        if joint_index is None:
+        if joint_name not in hierarchy.joint_names:
             raise ValueError(
                 f"Constraint {name!r} references unknown joint {joint_name!r}."
             )
+        joint_index = hierarchy.joint_index(joint_name)
 
         if constraint_type == "position":
             residuals[name] = position_constraint(
@@ -773,8 +791,10 @@ def _constraint_residuals(
         elif constraint_type == "joint_limit":
             channel_indices = np.asarray(
                 [
-                    document.joints[joint_index].channel_start + channel_offset
-                    for channel_offset, channel in enumerate(document.joints[joint_index].channels)
+                    hierarchy.channel_start(joint_index) + channel_offset
+                    for channel_offset, channel in enumerate(
+                        hierarchy.joints[joint_index].channels
+                    )
                     if channel.endswith("rotation")
                 ],
                 dtype=np.int64,
@@ -805,13 +825,13 @@ def _constraint_residuals(
 
 
 def solve_motion_spacetime(
-    reference_document: BVHDocument,
+    reference_motion: Motion,
     constraints: Sequence[Mapping[str, object]],
     **solver_options,
 ) -> OptimizeResult:
     """Optimize an already projected target reference motion.
 
-    ``reference_document`` is both the initial motion and target skeleton, so
+    ``reference_motion`` is both the initial motion and target skeleton, so
     this entry point has no equal-topology source requirement. It deliberately
     keeps all residual evaluation and sparse optimization in
     :func:`retarget_motion_spacetime`.
@@ -820,8 +840,8 @@ def solve_motion_spacetime(
     if "scale" in solver_options:
         raise ValueError("solve_motion_spacetime uses target-space reference motion; omit scale.")
     return retarget_motion_spacetime(
-        reference_document,
-        reference_document,
+        reference_motion,
+        reference_motion,
         constraints,
         scale=1.0,
         **solver_options,

@@ -1,18 +1,19 @@
-"""Rotation transfer helpers for FK BVH retargeting."""
+"""Rotation transfer helpers for FK retargeting."""
 
 import numpy as np
 import warnings
 from scipy.spatial.transform import Rotation
 
+from broom import Hierarchy, Motion
 from broom.rotations.euler import wrap_degrees
-from broom.bvh.math_helpers import normalize_vectors
-from broom.bvh.ops.skeleton import compute_rest_joint_positions
-from broom.bvh.schemas import BVHDocument
-from broom.bvh.retargeting.mapping import invert_mapping
-from broom.bvh.retargeting.schemas import RotationChannels
+from broom.math_helpers import normalize_vectors
+from broom.kinematics import compute_rest_joint_positions
+from broom.retargeting.mapping import invert_mapping
+from broom.retargeting.schemas import RotationChannels
 
 
-def rotation_channels_by_name(document: BVHDocument) -> dict[str, RotationChannels]:
+#TODO: we have simillar function in the hierarchy methods. Should we rewrite or move this?
+def rotation_channels_by_name(hierarchy: Hierarchy) -> dict[str, RotationChannels]:
     """Return BVH rotation channel metadata keyed by joint name.
 
     The returned Euler order preserves BVH channel order exactly, for example
@@ -21,7 +22,7 @@ def rotation_channels_by_name(document: BVHDocument) -> dict[str, RotationChanne
     """
 
     channels = {}
-    for joint in document.joints:
+    for joint_index, joint in enumerate(hierarchy.joints):
         rotation_offsets = [
             offset
             for offset, channel in enumerate(joint.channels)
@@ -30,7 +31,10 @@ def rotation_channels_by_name(document: BVHDocument) -> dict[str, RotationChanne
         if len(rotation_offsets) != 3:
             continue
 
-        indices = tuple(joint.channel_start + offset for offset in rotation_offsets)
+        indices = tuple(
+            hierarchy.channel_start(joint_index) + offset
+            for offset in rotation_offsets
+        )
         order = "".join(
             joint.channels[offset][0] for offset in rotation_offsets
         )
@@ -42,19 +46,20 @@ def rotation_channels_by_name(document: BVHDocument) -> dict[str, RotationChanne
 
 
 def transfer_fk_rotations(
-    source_document: BVHDocument,
-    target_document: BVHDocument,
+    source_motion: Motion,
+    target_hierarchy: Hierarchy,
     source_to_target: dict[str, str],
     target_motion: np.ndarray,
     rotation_correction: str,
 ) -> None:
     """Transfer source Euler rotations onto the target skeleton."""
 
-    source_rotations = rotation_channels_by_name(source_document)
-    target_rotations = rotation_channels_by_name(target_document)
+    source_hierarchy = source_motion.hierarchy
+    source_rotations = rotation_channels_by_name(source_hierarchy)
+    target_rotations = rotation_channels_by_name(target_hierarchy)
     target_to_source = invert_mapping(source_to_target)
-    source_rest_frames = estimate_rest_frames(source_document)
-    target_rest_frames = estimate_rest_frames(target_document)
+    source_rest_frames = estimate_rest_frames(source_hierarchy)
+    target_rest_frames = estimate_rest_frames(target_hierarchy)
 
     for target_name, source_name in target_to_source.items():
         source_channels = source_rotations.get(source_name)
@@ -62,22 +67,22 @@ def transfer_fk_rotations(
         if source_channels is None or target_channels is None:
             continue
 
-        source_angles = source_document.motion_values[:, list(source_channels.indices)]
+        source_angles = source_motion.values[:, list(source_channels.indices)]
         converted = convert_euler_degrees(
             angles=source_angles,
             source_order=source_channels.order,
             target_order=target_channels.order,
             source_rest_frame=source_rest_frames[
-                source_document.joint_index[source_name]
+                source_hierarchy.joint_index(source_name)
             ],
             target_rest_frame=target_rest_frames[
-                target_document.joint_index[target_name]
+                target_hierarchy.joint_index(target_name)
             ],
             rotation_correction=rotation_correction,
         )
         target_motion[:, list(target_channels.indices)] = converted
 
-
+# TODO: should we move rotation functions to the rotation module?
 def convert_euler_degrees(
     angles: np.ndarray,
     source_order: str,
@@ -118,7 +123,7 @@ def convert_euler_degrees(
     converted = wrap_degrees(rotations.as_euler(target_order, degrees=True))
     return unwrap_euler_degrees(converted)
 
-
+# TODO: should we move rotation functions to the rotation module?
 def unwrap_euler_degrees(angles: np.ndarray) -> np.ndarray:
     """Keep Euler channels continuous over time to avoid 360-degree jumps."""
 
@@ -127,7 +132,7 @@ def unwrap_euler_degrees(angles: np.ndarray) -> np.ndarray:
     radians = np.deg2rad(angles)
     return np.rad2deg(np.unwrap(radians, axis=0))
 
-
+# TODO: should we move rotation functions to the rotation module?
 def matrices_to_euler_near_reference(
     matrices: np.ndarray,
     order: str,
@@ -148,14 +153,14 @@ def matrices_to_euler_near_reference(
     return candidates[choice, np.arange(reference.shape[0])]
 
 
-def estimate_rest_frames(document: BVHDocument) -> np.ndarray:
+def estimate_rest_frames(hierarchy: Hierarchy) -> np.ndarray:
     """Estimate a stable rest-pose orientation frame for each joint."""
 
-    positions = compute_rest_joint_positions(document.joints)
-    children = _children_by_parent(document)
-    frames = np.zeros((len(document.joints), 3, 3), dtype=np.float64)
+    positions = compute_rest_joint_positions(hierarchy)
+    children = _children_by_parent(hierarchy)
+    frames = np.zeros((hierarchy.joint_count, 3, 3), dtype=np.float64)
 
-    for index, joint in enumerate(document.joints):
+    for index, joint in enumerate(hierarchy.joints):
         child_indices = children.get(index, ())
         if len(child_indices) == 1:
             direction = positions[child_indices[0]] - positions[index]
@@ -167,10 +172,10 @@ def estimate_rest_frames(document: BVHDocument) -> np.ndarray:
 
     return frames
 
-
-def _children_by_parent(document: BVHDocument) -> dict[int, tuple[int, ...]]:
+# TODO: del. we have list of childrens on Hierarchy class
+def _children_by_parent(hierarchy: Hierarchy) -> dict[int, tuple[int, ...]]:
     children: dict[int, list[int]] = {}
-    for index, joint in enumerate(document.joints):
+    for index, joint in enumerate(hierarchy.joints):
         if joint.parent == -1:
             continue
         children.setdefault(joint.parent, []).append(index)

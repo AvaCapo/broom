@@ -1,38 +1,32 @@
-"""BVH motion retargeting between different skeleton hierarchies."""
+"""Motion retargeting between different skeleton hierarchies."""
 
 from __future__ import annotations
 
 from pathlib import Path
 import numpy as np
 
-from broom.bvh.io import (
-    load_bvh_document,
-    write_bvh_with_motion_values,
-)
-from broom.bvh.ops.motion import (
-    with_motion_values,
-)
-from broom.bvh.schemas import BVHDocument
-from broom.bvh.retargeting.mapping import (
+from broom import Hierarchy, Motion
+from broom.io import load_bvh, write_bvh
+from broom.retargeting.mapping import (
     load_joint_mapping,
     map_joints,
     unmapped_sources,
     unmapped_targets,
 )
-from broom.bvh.retargeting.root_motion import (
+from broom.retargeting.root_motion import (
     align_root_to_floor,
     skeleton_scale,
     transfer_root_translation,
 )
-from broom.bvh.retargeting.rotation_transfer import (
+from broom.retargeting.rotation_transfer import (
     transfer_fk_rotations,
 )
-from broom.bvh.retargeting.schemas import RetargetResult
+from broom.retargeting.schemas import RetargetResult
 
 
 def retarget_motion(
-    source_document: BVHDocument,
-    target_document: BVHDocument,
+    source_motion: Motion,
+    target_motion: Motion,
     joint_map: dict[str, str] | None = None,
     root_translation: str = "scaled",
     root_scale: float | None = None,
@@ -44,7 +38,7 @@ def retarget_motion(
     floor_use_rest_pose: bool = False,
     floor_first_frame_only: bool = True,
 ) -> RetargetResult:
-    """Transfer source BVH motion onto a target BVH skeleton.
+    """Transfer source motion onto a target skeleton.
 
     ``joint_map`` uses source joint names as keys and target joint names as
     values. If it is omitted, joints are matched by normalized names.
@@ -54,8 +48,8 @@ def retarget_motion(
     first-frame-only estimation without rest pose.
     """
 
-    if source_document.frame_count <= 0:
-        raise ValueError("Source BVH document does not contain motion frames.")
+    if source_motion.frame_count <= 0:
+        raise ValueError("Source Motion does not contain motion frames.")
 
     root_translation = root_translation.lower()
     if root_translation not in {"scaled", "copy", "none"}:
@@ -70,40 +64,40 @@ def retarget_motion(
         raise ValueError("initial_pose must be one of: 'zero', 'first_frame'.")
 
     mapping_result = map_joints(
-        source_document=source_document,
-        target_document=target_document,
+        source_hierarchy=source_motion.hierarchy,
+        target_hierarchy=target_motion.hierarchy,
         joint_map=joint_map,
     )
     source_to_target = mapping_result.mapping
     if strict:
         _raise_if_unmapped(
-            source_document=source_document,
-            target_document=target_document,
+            source_hierarchy=source_motion.hierarchy,
+            target_hierarchy=target_motion.hierarchy,
             source_to_target=source_to_target,
         )
 
     if initial_pose == "zero":
-        target_motion = np.zeros(
-            (source_document.frame_count, target_document.total_channels),
+        target_values = np.zeros(
+            (source_motion.frame_count, target_motion.hierarchy.total_channels),
             dtype=np.float64,
         )
     else:
-        if target_document.frame_count <= 0:
+        if target_motion.frame_count <= 0:
             raise ValueError(
-                "Target BVH document must contain at least one motion frame "
+                "Target Motion must contain at least one motion frame "
                 "when initial_pose='first_frame'."
             )
-        template_pose = np.nan_to_num(target_document.motion_values[0], nan=0.0)
-        target_motion = np.repeat(
+        template_pose = np.nan_to_num(target_motion.values[0], nan=0.0)
+        target_values = np.repeat(
             template_pose[None, :],
-            source_document.frame_count,
+            source_motion.frame_count,
             axis=0,
         )
     transfer_fk_rotations(
-        source_document=source_document,
-        target_document=target_document,
+        source_motion=source_motion,
+        target_hierarchy=target_motion.hierarchy,
         source_to_target=source_to_target,
-        target_motion=target_motion,
+        target_motion=target_values,
         rotation_correction=rotation_correction,
     )
 
@@ -111,39 +105,42 @@ def retarget_motion(
     if root_translation == "scaled":
         if root_scale is None:
             scale = skeleton_scale(
-                source_document=source_document,
-                target_document=target_document,
+                source_hierarchy=source_motion.hierarchy,
+                target_hierarchy=target_motion.hierarchy,
             )
         transfer_root_translation(
-            source_document=source_document,
-            target_document=target_document,
-            target_motion=target_motion,
+            source_motion=source_motion,
+            target_hierarchy=target_motion.hierarchy,
+            target_motion=target_values,
             scale=scale,
         )
     elif root_translation == "copy":
         transfer_root_translation(
-            source_document=source_document,
-            target_document=target_document,
-            target_motion=target_motion,
+            source_motion=source_motion,
+            target_hierarchy=target_motion.hierarchy,
+            target_motion=target_values,
             scale=1.0,
         )
-    output_document = with_motion_values(
-        document=target_document,
-        motion_values=target_motion,
-        frame_time=source_document.frame_time,
+    output_motion = Motion(
+        target_motion.hierarchy,
+        target_values,
+        source_motion.frame_time,
     )
     if floor_align:
-        output_document = align_root_to_floor(
-            output_document,
+        output_motion = align_root_to_floor(
+            output_motion,
             use_rest_pose=floor_use_rest_pose,
             first_frame_only=floor_first_frame_only,
         )
     return RetargetResult(
-        document=output_document,
-        motion_values=output_document.motion_values,
+        motion=output_motion,
         joint_map=source_to_target,
-        unmapped_source_joints=unmapped_sources(source_document, source_to_target),
-        unmapped_target_joints=unmapped_targets(target_document, source_to_target),
+        unmapped_source_joints=unmapped_sources(
+            source_motion.hierarchy, source_to_target
+        ),
+        unmapped_target_joints=unmapped_targets(
+            target_motion.hierarchy, source_to_target
+        ),
         root_scale=scale,
     )
 
@@ -173,13 +170,13 @@ def retarget_bvh_file(
     if joint_map is not None and mapping_path is not None:
         raise ValueError("Pass either joint_map or mapping_path, not both.")
 
-    source_document = load_bvh_document(source_path)
-    target_document = load_bvh_document(target_path)
+    source_motion = load_bvh(source_path)
+    target_motion = load_bvh(target_path)
     mapping = load_joint_mapping(mapping_path) if mapping_path else joint_map
 
     result = retarget_motion(
-        source_document=source_document,
-        target_document=target_document,
+        source_motion=source_motion,
+        target_motion=target_motion,
         joint_map=mapping,
         root_translation=root_translation,
         root_scale=root_scale,
@@ -190,22 +187,17 @@ def retarget_bvh_file(
         floor_use_rest_pose=floor_use_rest_pose,
         floor_first_frame_only=floor_first_frame_only,
     )
-    write_bvh_with_motion_values(
-        document=result.document,
-        output_path=output_path,
-        motion_values=result.motion_values,
-        precision=precision,
-    )
+    write_bvh(result.motion, output_path, precision=precision)
     return result
 
 
 def _raise_if_unmapped(
-    source_document: BVHDocument,
-    target_document: BVHDocument,
+    source_hierarchy: Hierarchy,
+    target_hierarchy: Hierarchy,
     source_to_target: dict[str, str],
 ) -> None:
-    missing_sources = unmapped_sources(source_document, source_to_target)
-    missing_targets = unmapped_targets(target_document, source_to_target)
+    missing_sources = unmapped_sources(source_hierarchy, source_to_target)
+    missing_targets = unmapped_targets(target_hierarchy, source_to_target)
     if missing_sources or missing_targets:
         raise ValueError(
             "Retargeting mapping is incomplete. "

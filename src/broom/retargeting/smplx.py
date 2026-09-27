@@ -6,11 +6,11 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from broom.bvh.channels import position_channel_dimension
-from broom.bvh.kinematics import compute_global_transforms
-from broom.bvh.ops.resample import resample_fps
-from broom.bvh.rotations import quat
-from broom.bvh.schemas import BVHDocument
+from broom import Motion
+from broom.channels import position_channel_dimension
+from broom.kinematics import compute_global_transforms
+from broom.ops.resample import resample_fps
+from broom.rotations import quat
 
 
 SMPLX_BODY_JOINT_COUNT = 22
@@ -18,7 +18,7 @@ SMPLX_POSE_SIZE = 165
 
 
 def retarget_bvh_to_smplx(
-    document: BVHDocument,
+    motion: Motion,
     source_joint_names: Sequence[str],
     smplx_to_source: Sequence[tuple[str, str, int]],
     *,
@@ -30,7 +30,7 @@ def retarget_bvh_to_smplx(
     hand_pose: np.ndarray | None = None,
     gender: str = "neutral",
 ) -> dict[str, np.ndarray]:
-    """Retarget a BVH document to a compact AMASS-style SMPL-X dictionary.
+    """Retarget a Motion to a compact AMASS-style SMPL-X dictionary.
 
     ``source_joint_names`` defines the source order used by
     ``source_global_rotation_offsets``. ``smplx_to_source`` defines the target
@@ -54,7 +54,7 @@ def retarget_bvh_to_smplx(
         (str(target), str(source), int(parent))
         for target, source, parent in smplx_to_source
     )
-    _validate_inputs(document, source_names, mapping)
+    _validate_inputs(motion, source_names, mapping)
     if target_fps is not None and (
         not np.isfinite(float(target_fps)) or float(target_fps) <= 0.0
     ):
@@ -63,9 +63,11 @@ def retarget_bvh_to_smplx(
     if not np.isfinite(root_translation_scale):
         raise ValueError("root_translation_scale must be finite")
 
-    motion = document if target_fps is None else resample_fps(document, target_fps)
+    motion = motion if target_fps is None else resample_fps(motion, target_fps)
     _, source_global = compute_global_transforms(motion)
-    source_indices = {name: motion.joint_index[name] for name in source_names}
+    source_indices = {
+        name: motion.hierarchy.joint_index(name) for name in source_names
+    }
     selected_global = source_global[:, [source_indices[name] for name in source_names]]
 
     if source_global_rotation_offsets is not None:
@@ -96,7 +98,10 @@ def retarget_bvh_to_smplx(
             )
 
     root_source_name = mapping[0][1]
-    translations = _translation_channels_to_joint(motion, motion.joint_index[root_source_name])
+    translations = _translation_channels_to_joint(
+        motion,
+        motion.hierarchy.joint_index(root_source_name),
+    )
     translations *= root_translation_scale
 
     if coordinate_transform is not None:
@@ -144,13 +149,15 @@ def retarget_bvh_to_smplx(
 
 
 def _validate_inputs(
-    document: BVHDocument,
+    motion: Motion,
     source_joint_names: tuple[str, ...],
     mapping: tuple[tuple[str, str, int], ...],
 ) -> None:
     if len(source_joint_names) != len(set(source_joint_names)):
         raise ValueError("source_joint_names must not contain duplicates")
-    missing = [name for name in source_joint_names if name not in document.joint_index]
+    missing = [
+        name for name in source_joint_names if name not in motion.hierarchy.joint_names
+    ]
     if missing:
         raise ValueError(f"BVH is missing configured source joints: {', '.join(missing)}")
     if len(mapping) != SMPLX_BODY_JOINT_COUNT:
@@ -174,24 +181,27 @@ def _validate_inputs(
             raise ValueError(
                 f"SMPL-X joint {index} has invalid parent {parent}; parents must precede children"
             )
-    if document.frame_time is None or document.frame_time <= 0.0:
-        raise ValueError("BVH document must have a positive frame_time")
-    if document.frame_count <= 0:
-        raise ValueError("BVH document must contain at least one motion frame")
+    if motion.frame_time <= 0.0:
+        raise ValueError("Motion must have a positive frame_time")
+    if motion.frame_count <= 0:
+        raise ValueError("Motion must contain at least one motion frame")
 
 
-def _translation_channels_to_joint(document: BVHDocument, joint_index: int) -> np.ndarray:
-    translations = np.zeros((document.frame_count, 3), dtype=np.float64)
+def _translation_channels_to_joint(motion: Motion, joint_index: int) -> np.ndarray:
+    hierarchy = motion.hierarchy
+    translations = np.zeros((motion.frame_count, 3), dtype=np.float64)
     path = []
     while joint_index >= 0:
         path.append(joint_index)
-        joint_index = document.joints[joint_index].parent
+        joint_index = hierarchy.joints[joint_index].parent
 
     for index in reversed(path):
-        joint = document.joints[index]
+        joint = hierarchy.joints[index]
         for channel_offset, channel in enumerate(joint.channels):
             if channel.endswith("position"):
-                values = document.motion_values[:, joint.channel_start + channel_offset]
+                values = motion.values[
+                    :, hierarchy.channel_start(index) + channel_offset
+                ]
                 translations[:, position_channel_dimension(channel)] += np.nan_to_num(values, nan=0.0)
     return translations
 

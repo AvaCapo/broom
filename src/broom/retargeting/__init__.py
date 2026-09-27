@@ -1,34 +1,34 @@
 """BVH retargeting helpers."""
 
-from broom.bvh.retargeting.mapping import (
+from broom.retargeting.mapping import (
     build_joint_mapping,
     load_joint_mapping,
     map_joints,
     score_joint_match,
 )
-from broom.bvh.retargeting.retarget import (
+from broom.retargeting.retarget import (
     retarget_bvh_file,
     retarget_motion,
 )
-from broom.bvh.retargeting.root_motion import (
+from broom.retargeting.root_motion import (
     align_root_to_floor,
     estimate_floor_level,
     skeleton_scale,
     transfer_root_translation,
 )
-from broom.bvh.retargeting.rotation_transfer import (
+from broom.retargeting.rotation_transfer import (
     rotation_channels_by_name,
     transfer_fk_rotations,
 )
-from broom.bvh.retargeting.semantic_projection import semantic_skeleton_projection
-from broom.bvh.retargeting.relational_constraints import build_relational_constraints
-from broom.bvh.retargeting.schemas import (
+from broom.retargeting.semantic_projection import semantic_skeleton_projection
+from broom.retargeting.relational_constraints import build_relational_constraints
+from broom.retargeting.schemas import (
     JointMatch,
     MappingResult,
     RetargetResult,
 )
-from broom.bvh.retargeting.smplx import retarget_bvh_to_smplx
-from broom.bvh.retargeting.spacetime import (
+from broom.retargeting.smplx import retarget_bvh_to_smplx
+from broom.retargeting.spacetime import (
     floor_constraint,
     joint_limit_constraint,
     position_constraint,
@@ -37,7 +37,7 @@ from broom.bvh.retargeting.spacetime import (
     solve_motion_spacetime,
     stationary_constraint,
 )
-from broom.bvh.retargeting.utils import (
+from broom.retargeting.utils import (
     compute_mapped_position_error,
     mapped_joint_pairs,
 )

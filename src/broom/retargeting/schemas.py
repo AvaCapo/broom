@@ -1,6 +1,6 @@
-import numpy as np
 from dataclasses import dataclass
-from broom.bvh.schemas import BVHDocument
+
+from broom import Motion
 
 
 @dataclass(frozen=True)
@@ -27,8 +27,7 @@ class MappingResult:
 class RetargetResult:
     """Result of retargeting source motion onto a target BVH skeleton."""
 
-    document: BVHDocument
-    motion_values: np.ndarray
+    motion: Motion
     joint_map: dict[str, str]
     unmapped_source_joints: tuple[str, ...]
     unmapped_target_joints: tuple[str, ...]
