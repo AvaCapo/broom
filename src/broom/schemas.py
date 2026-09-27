@@ -1,4 +1,5 @@
 """Common data structures for BVH."""
+#NOTE: legacy implementation. TODO: delete after confirming full refactoring
 
 from __future__ import annotations
 
