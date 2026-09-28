@@ -22,10 +22,9 @@ from broom.kinematics import (
     compute_global_positions,
     compute_global_transforms_from_local,
 )
-from broom.rotations.euler import axis_rotation_matrices
+from broom.rotations.euler import axis_rotation_matrices, matrices_to_euler_near_reference
+from broom.ops.skeleton_geometry import estimate_skeleton_scale_ratio
 from broom.rotations.rotvec import right_jacobian
-from broom.retargeting.root_motion import skeleton_scale
-from broom.retargeting.rotation_transfer import matrices_to_euler_near_reference
 
 
 # 5 mm is a practical default positional error for human animation in meters,
@@ -342,7 +341,7 @@ def retarget_motion_spacetime(
             raise ValueError("parameter_weights cannot contain negative values.")
 
     resolved_scale = (
-        skeleton_scale(source_hierarchy, target_hierarchy)
+        estimate_skeleton_scale_ratio(source_hierarchy, target_hierarchy)
         if scale is None
         else float(scale)
     )

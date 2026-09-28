@@ -9,12 +9,10 @@ from scipy.spatial.transform import Rotation
 
 from broom import Motion
 from broom.kinematics import compute_global_transforms, compute_rest_joint_positions
-from broom.retargeting.root_motion import skeleton_scale, transfer_root_translation
-from broom.retargeting.rotation_transfer import (
-    matrices_to_euler_near_reference,
-    transfer_fk_rotations,
-    unwrap_euler_degrees,
-)
+from broom.rotations.euler import matrices_to_euler_near_reference, unwrap_euler_degrees
+from broom.ops.skeleton_geometry import estimate_skeleton_scale_ratio
+from broom.retargeting.root_motion import transfer_root_translation
+from broom.retargeting.rotation_transfer import transfer_fk_rotations
 
 # Ordered from the root towards leaves so reconstructed local rotations have a
 # reconstructed parent when a chain is processed.
@@ -61,7 +59,7 @@ def semantic_skeleton_projection(
         (frame_count, target_hierarchy.total_channels), dtype=np.float64
     )
     scale = (
-        skeleton_scale(source_hierarchy, target_hierarchy)
+        estimate_skeleton_scale_ratio(source_hierarchy, target_hierarchy)
         if root_scale is None
         else float(root_scale)
     )

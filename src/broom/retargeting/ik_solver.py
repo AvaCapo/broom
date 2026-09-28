@@ -77,6 +77,10 @@ class TorchBVHIKSolver:
     degrees, and PyTorch autograd supplies the Jacobian implicitly.
     """
 
+    # TODO: Include Joint.local_orientation in the differentiable FK
+    # recurrence. Until then, this solver is not geometrically equivalent to
+    # canonical FK for hierarchies with non-identity rest orientations.
+
     def __init__(
         self,
         hierarchy: Hierarchy,

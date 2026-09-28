@@ -32,11 +32,3 @@ class RetargetResult:
     unmapped_source_joints: tuple[str, ...]
     unmapped_target_joints: tuple[str, ...]
     root_scale: float
-
-
-@dataclass(frozen=True)
-class RotationChannels:
-    """Absolute channel indices and Euler order for one joint."""
-
-    indices: tuple[int, int, int]
-    order: str

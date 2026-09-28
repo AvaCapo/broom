@@ -153,6 +153,10 @@ def solve_fabrik_bvh_frame(
 ) -> np.ndarray:
     """Solve one Motion frame with FABRIK and return updated channel values."""
 
+    # TODO: Decode and encode rotations relative to Joint.local_orientation.
+    # FABRIK solves full local rotations; writing BVH channels must remove the
+    # static rest orientation before matrix-to-Euler conversion.
+
     chain = _resolve_chain_indices(
         hierarchy=motion.hierarchy,
         chain_joint_names=chain_joint_names,

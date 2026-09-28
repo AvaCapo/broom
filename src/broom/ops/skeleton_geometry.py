@@ -48,6 +48,18 @@ def estimate_height(
     return float(np.ptp(rest_positions[:, axis]))
 
 
+def estimate_skeleton_scale_ratio(
+    source_hierarchy: Hierarchy,
+    target_hierarchy: Hierarchy,
+) -> float:
+    """Return the target-to-source rest-skeleton height ratio."""
+    source_height = estimate_height(source_hierarchy, include_end_sites=False)
+    target_height = estimate_height(target_hierarchy, include_end_sites=False)
+    if source_height <= 1.0e-8 or target_height <= 1.0e-8:
+        return 1.0
+    return float(target_height / source_height)
+
+
 def estimate_joint_height(
     hierarchy: Hierarchy,
     joint_index: int,

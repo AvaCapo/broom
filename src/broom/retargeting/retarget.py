@@ -7,6 +7,7 @@ import numpy as np
 
 from broom import Hierarchy, Motion
 from broom.io import load_bvh, write_bvh
+from broom.ops.skeleton_geometry import estimate_skeleton_scale_ratio
 from broom.retargeting.mapping import (
     load_joint_mapping,
     map_joints,
@@ -15,7 +16,6 @@ from broom.retargeting.mapping import (
 )
 from broom.retargeting.root_motion import (
     align_root_to_floor,
-    skeleton_scale,
     transfer_root_translation,
 )
 from broom.retargeting.rotation_transfer import (
@@ -35,6 +35,7 @@ def retarget_motion(
     floor_align: bool = True,
     strict: bool = False,
     *,
+    floor_up_axis: str = "Y",
     floor_use_rest_pose: bool = False,
     floor_first_frame_only: bool = True,
 ) -> RetargetResult:
@@ -44,8 +45,9 @@ def retarget_motion(
     values. If it is omitted, joints are matched by normalized names.
     When floor_align is enabled, floor_first_frame_only selects the first
     output frame instead of the whole clip for floor estimation;
-    floor_use_rest_pose additionally includes rest pose. Defaults preserve
-    first-frame-only estimation without rest pose.
+    floor_use_rest_pose additionally includes rest pose. floor_up_axis selects
+    the coordinate axis normal to the floor. Defaults preserve first-frame-only
+    estimation without rest pose and a Y-up floor.
     """
 
     if source_motion.frame_count <= 0:
@@ -104,7 +106,7 @@ def retarget_motion(
     scale = float(root_scale) if root_scale is not None else 1.0
     if root_translation == "scaled":
         if root_scale is None:
-            scale = skeleton_scale(
+            scale = estimate_skeleton_scale_ratio(
                 source_hierarchy=source_motion.hierarchy,
                 target_hierarchy=target_motion.hierarchy,
             )
@@ -129,6 +131,7 @@ def retarget_motion(
     if floor_align:
         output_motion = align_root_to_floor(
             output_motion,
+            up_axis=floor_up_axis,
             use_rest_pose=floor_use_rest_pose,
             first_frame_only=floor_first_frame_only,
         )
@@ -159,12 +162,13 @@ def retarget_bvh_file(
     strict: bool = False,
     precision: int = 6,
     *,
+    floor_up_axis: str = "Y",
     floor_use_rest_pose: bool = False,
     floor_first_frame_only: bool = True,
 ) -> RetargetResult:
     """Load two BVH files, retarget the motion, and write the output BVH.
 
-    Floor estimation options are forwarded to retarget_motion.
+    Floor alignment options are forwarded to retarget_motion.
     """
 
     if joint_map is not None and mapping_path is not None:
@@ -184,6 +188,7 @@ def retarget_bvh_file(
         initial_pose=initial_pose,
         floor_align=floor_align,
         strict=strict,
+        floor_up_axis=floor_up_axis,
         floor_use_rest_pose=floor_use_rest_pose,
         floor_first_frame_only=floor_first_frame_only,
     )
