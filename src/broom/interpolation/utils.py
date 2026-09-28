@@ -98,7 +98,7 @@ def blend_frame_ranges(
 ) -> np.ndarray:
     """Blend matching frame ranges from two motions."""
 
-    # TODO: Add numerical checks for Euler convention, partial axes, and winding.
+    # TODO: Add numerical checks for partial axes and winding.
 
     if first_values.shape != second_values.shape:
         raise ValueError(
@@ -123,7 +123,7 @@ def blend_frame_ranges(
             continue
         order = np.asarray(
             [
-                channel[0].lower()
+                channel[0]
                 for channel in joint.channels
                 if channel.endswith("rotation")
             ]

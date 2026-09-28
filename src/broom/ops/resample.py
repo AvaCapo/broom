@@ -2,20 +2,42 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 
 from broom import Hierarchy, Motion
 from broom.rotations.euler import blend_euler_degrees
 
 
-def resample_fps(motion: Motion, target_fps: float) -> Motion:
-    """Return a copy of the Motion resampled to ``target_fps``."""
+def resample_fps(
+    motion: Motion,
+    target_fps: float,
+    *,
+    endpoint_policy: Literal["preserve", "truncate"] = "preserve",
+) -> Motion:
+    """Return a Motion sampled at an exact ``target_fps``.
+
+    ``endpoint_policy='preserve'`` retains the first and last source poses
+    and chooses the nearest frame count for ``target_fps``. The returned
+    Motion still records exactly ``1 / target_fps`` as its frame time, so its
+    duration can differ slightly from the source duration through intentional
+    uniform time scaling. ``endpoint_policy='truncate'`` samples only source
+    times on the exact target-FPS grid and omits a final partial interval.
+
+    Non-rotation channels are interpolated linearly. One-axis rotation
+    channels are unwrapped over source frames before interpolation, so each
+    adjacent rotation follows the shortest path. Two-axis rotation groups use
+    linear channel interpolation. Three-axis groups use declared-order SLERP.
+    """
     if not isinstance(motion, Motion):
         raise TypeError("motion must be a Motion.")
 
     target_fps = float(target_fps)
-    if target_fps <= 0.0:
-        raise ValueError("Target FPS must be positive.")
+    if not np.isfinite(target_fps) or target_fps <= 0.0:
+        raise ValueError("Target FPS must be a positive finite number.")
+    if endpoint_policy not in {"preserve", "truncate"}:
+        raise ValueError("endpoint_policy must be 'preserve' or 'truncate'.")
 
     target_frame_time = 1.0 / target_fps
     source_values = motion.values
@@ -24,16 +46,30 @@ def resample_fps(motion: Motion, target_fps: float) -> Motion:
         return Motion(motion.hierarchy, source_values, target_frame_time)
 
     duration = (motion.frame_count - 1) * motion.frame_time
-    target_frame_count = max(1, int(round(duration * target_fps)) + 1)
+    if endpoint_policy == "preserve":
+        target_interval_count = max(
+            1,
+            int(np.floor(duration * target_fps + 0.5)),
+        )
+    else:
+        target_interval_count = int(np.floor(duration * target_fps))
+    target_frame_count = target_interval_count + 1
 
     source_times = np.arange(motion.frame_count, dtype=np.float64)
     source_times *= motion.frame_time
-    target_times = np.linspace(
-        0.0,
-        duration,
-        target_frame_count,
-        dtype=np.float64,
-    )
+    if endpoint_policy == "preserve":
+        sample_times = np.linspace(
+            0.0,
+            duration,
+            target_frame_count,
+            dtype=np.float64,
+        )
+        sample_times[0] = source_times[0]
+        sample_times[-1] = source_times[-1]
+    else:
+        sample_times = (
+            np.arange(target_frame_count, dtype=np.float64) * target_frame_time
+        )
 
     resampled = np.empty(
         (target_frame_count, motion.hierarchy.total_channels),
@@ -42,14 +78,14 @@ def resample_fps(motion: Motion, target_fps: float) -> Motion:
     _resample_motion_channels(
         source_values=source_values,
         source_times=source_times,
-        target_times=target_times,
+        sample_times=sample_times,
         resampled=resampled,
     )
     _resample_rotation_channels(
         hierarchy=motion.hierarchy,
         source_values=source_values,
         source_times=source_times,
-        target_times=target_times,
+        sample_times=sample_times,
         resampled=resampled,
     )
     return Motion(motion.hierarchy, resampled, target_frame_time)
@@ -58,14 +94,14 @@ def resample_fps(motion: Motion, target_fps: float) -> Motion:
 def _resample_motion_channels(
     source_values: np.ndarray,
     source_times: np.ndarray,
-    target_times: np.ndarray,
+    sample_times: np.ndarray,
     resampled: np.ndarray,
 ) -> None:
     """Linearly resample all channels as the baseline pass."""
 
     for channel_index in range(source_values.shape[1]):
         resampled[:, channel_index] = np.interp(
-            target_times,
+            sample_times,
             source_times,
             source_values[:, channel_index],
         )
@@ -75,24 +111,41 @@ def _resample_rotation_channels(
     hierarchy: Hierarchy,
     source_values: np.ndarray,
     source_times: np.ndarray,
-    target_times: np.ndarray,
+    sample_times: np.ndarray,
     resampled: np.ndarray,
 ) -> None:
-    """Replace linearly interpolated rotation channels with SLERP results."""
+    """Apply the interpolation policy for each joint rotation group.
+
+    A one-axis group is unwrapped before linear interpolation, treating
+    adjacent source rotations as shortest-path changes. A two-axis group
+    retains the baseline linear channel interpolation. A three-axis group is
+    replaced with declared-order SLERP.
+    """
 
     for joint in hierarchy.joints:
         indices = list(hierarchy.rotation_channel_indices(joint.name))
+        if len(indices) == 1:
+            channel_index = indices[0]
+            unwrapped = np.rad2deg(
+                np.unwrap(np.deg2rad(source_values[:, channel_index]))
+            )
+            resampled[:, channel_index] = np.interp(
+                sample_times,
+                source_times,
+                unwrapped,
+            )
+            continue
         if len(indices) != 3:
             continue
         order = np.asarray(
             [
-                channel[0].lower()
+                channel[0]
                 for channel in joint.channels
                 if channel.endswith("rotation")
             ]
         )
-        for target_index, target_time in enumerate(target_times):
-            right = int(np.searchsorted(source_times, target_time, side="right"))
+        for target_index, sample_time in enumerate(sample_times):
+            right = int(np.searchsorted(source_times, sample_time, side="right"))
             if right <= 0:
                 resampled[target_index, indices] = source_values[0, indices]
                 continue
@@ -105,39 +158,11 @@ def _resample_rotation_channels(
             alpha = (
                 0.0
                 if span <= 0.0
-                else (target_time - source_times[left]) / span
+                else (sample_time - source_times[left]) / span
             )
-            resampled[target_index, indices] = _blend_rotation_degrees(
+            resampled[target_index, indices] = blend_euler_degrees(
                 first_angles=source_values[left, indices],
                 second_angles=source_values[right, indices],
                 order=order,
                 alpha=float(alpha),
             )
-
-
-def _blend_rotation_degrees(
-    first_angles: np.ndarray,
-    second_angles: np.ndarray,
-    order: np.ndarray,
-    alpha: float,
-) -> np.ndarray:
-    """Blend Euler angles with SLERP and fall back to shortest-angle lerp."""
-
-    try:
-        return blend_euler_degrees(
-            first_angles=first_angles,
-            second_angles=second_angles,
-            order=order,
-            alpha=alpha,
-        )
-    except ValueError:
-        delta = (second_angles - first_angles + 180.0) % 360.0 - 180.0
-        return (first_angles + delta * alpha + 180.0) % 360.0 - 180.0
-
-
-# TODO: Correct the existing numerical behavior before treating resampling as final.
-# - ``linspace`` can disagree with the recorded ``1 / target_fps`` time grid.
-# - Euler orders are converted to lowercase and differ from FK's intrinsic order.
-# - ValueError silently falls back from SLERP to channel-space interpolation.
-# - One- and two-axis rotation groups use baseline linear interpolation.
-# - Wrapped Euler output loses winding information.
