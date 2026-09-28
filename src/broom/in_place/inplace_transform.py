@@ -8,8 +8,8 @@ from typing import Sequence
 import numpy as np
 
 from broom import Motion
-from broom.bvh.in_place.schemas import InPlacePCAResult
-from broom.bvh.in_place.config import (
+from broom.in_place.schemas import InPlacePCAResult
+from broom.in_place.config import (
     DEFAULT_BODY_JOINT_WEIGHTS,
     DEFAULT_ROOT_AXES,
     InPlacePCAConfig,
@@ -29,7 +29,7 @@ from broom.channels import (
 from broom.io import load_bvh, write_bvh
 from broom.foot_lock import apply_root_foot_lock
 
-from broom.bvh.in_place.utils import (
+from broom.in_place.utils import (
     remove_smoothed_pca_trend,
     validate_axis_set,
 )

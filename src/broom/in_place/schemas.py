@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from broom.bvh.in_place.config import PCASource
+from broom.in_place.config import PCASource
 
 
 @dataclass(frozen=True)

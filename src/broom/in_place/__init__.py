@@ -1,6 +1,6 @@
 """BVH in-place transform helpers."""
 
-from broom.bvh.in_place.config import (
+from broom.in_place.config import (
     DEFAULT_BODY_JOINT_WEIGHTS,
     DEFAULT_ROOT_AXES,
     PCA_SOURCE_BODY,
@@ -8,11 +8,11 @@ from broom.bvh.in_place.config import (
     InPlacePCAConfig,
     PCASource,
 )
-from broom.bvh.in_place.inplace_transform import (
+from broom.in_place.inplace_transform import (
     InPlaceConverter,
 )
-from broom.bvh.in_place.schemas import InPlacePCAResult
-from broom.bvh.in_place.utils import (
+from broom.in_place.schemas import InPlacePCAResult
+from broom.in_place.utils import (
     remove_smoothed_pca_trend,
     validate_axis_set,
 )
