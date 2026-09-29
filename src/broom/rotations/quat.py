@@ -158,6 +158,13 @@ def from_matrix(rotmats: np.ndarray) -> np.ndarray:
     )
 
 
+def matrix_to_scaled_angle_axis(matrices: np.ndarray) -> np.ndarray:
+    """Convert rotation matrices to shortest scaled angle-axis vectors."""
+    quaternions = from_matrix(matrices)
+    quaternions = np.where(quaternions[..., :1] < 0.0, -quaternions, quaternions)
+    return to_scaled_angle_axis(quaternions)
+
+
 def to_euler(quaternions: np.ndarray, order: np.ndarray) -> np.ndarray:
     """
     Convert a quaternion to an intrinsic euler representation with a specified order.

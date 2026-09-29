@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from io import BytesIO
 
 import numpy as np
 
 from broom import Motion
-from broom.channels import position_channel_dimension
-from broom.kinematics import compute_global_transforms
+from broom.kinematics import compute_global_transforms, compute_rest_joint_positions
 from broom.ops.resample import resample_fps
 from broom.rotations import quat
 
@@ -17,7 +17,7 @@ SMPLX_BODY_JOINT_COUNT = 22
 SMPLX_POSE_SIZE = 165
 
 
-def retarget_bvh_to_smplx(
+def convert_motion_to_smplx(
     motion: Motion,
     source_joint_names: Sequence[str],
     smplx_to_source: Sequence[tuple[str, str, int]],
@@ -35,7 +35,10 @@ def retarget_bvh_to_smplx(
     ``source_joint_names`` defines the source order used by
     ``source_global_rotation_offsets``. ``smplx_to_source`` defines the target
     SMPL-X order as ``(target_name, source_name, target_parent_index)`` tuples.
-    The mapping must contain the root followed by all 21 SMPL-X body joints.
+    The mapping must start with the SMPL-X pelvis and its corresponding source
+    pelvis-equivalent joint, followed by all 21 remaining SMPL-X body joints.
+    A source hierarchy may have an additional joint above the pelvis; canonical
+    FK incorporates its transform into the pelvis global pose and trajectory.
 
     Rotation offsets re-express source global joint frames in the SMPL-X
     standard T-pose frame. Each matrix is applied as
@@ -64,7 +67,7 @@ def retarget_bvh_to_smplx(
         raise ValueError("root_translation_scale must be finite")
 
     motion = motion if target_fps is None else resample_fps(motion, target_fps)
-    _, source_global = compute_global_transforms(motion)
+    source_positions, source_global = compute_global_transforms(motion)
     source_indices = {
         name: motion.hierarchy.joint_index(name) for name in source_names
     }
@@ -98,9 +101,10 @@ def retarget_bvh_to_smplx(
             )
 
     root_source_name = mapping[0][1]
-    translations = _translation_channels_to_joint(
-        motion,
-        motion.hierarchy.joint_index(root_source_name),
+    root_source_index = motion.hierarchy.joint_index(root_source_name)
+    translations = (
+        source_positions[:, root_source_index]
+        - compute_rest_joint_positions(motion.hierarchy)[root_source_index]
     )
     translations *= root_translation_scale
 
@@ -118,7 +122,9 @@ def retarget_bvh_to_smplx(
         translations = translations @ transform.T
 
     frame_count = motion.frame_count
-    axis_angles = _matrices_to_axis_angles(target_local).reshape(frame_count, -1)
+    axis_angles = quat.matrix_to_scaled_angle_axis(target_local).reshape(
+        frame_count, -1
+    )
     jaw_and_eyes = np.zeros((frame_count, 9), dtype=np.float64)
     hands = _frame_pose(hand_pose, frame_count, 90, "hand_pose")
     poses = np.concatenate((axis_angles, jaw_and_eyes, hands), axis=1)
@@ -146,6 +152,51 @@ def retarget_bvh_to_smplx(
         "mocap_framerate": np.asarray(fps, dtype=np.float64),
         "betas": shape,
     }
+
+
+def serialize_motion_to_npz(
+    motion: Motion,
+    source_joint_names: Sequence[str],
+    joint_mapping: Sequence[tuple[str, str, int]],
+    *,
+    rotation_offsets: np.ndarray | None = None,
+    root_translation_scale: float = 1.0,
+    coordinate_transform: np.ndarray | None = None,
+    target_fps: float | None = None,
+    betas: np.ndarray | None = None,
+    hand_pose: np.ndarray | None = None,
+    gender: str = "neutral",
+) -> bytes:
+    """Serialize a Motion into the adapter's compressed NPZ payload."""
+    parameters = convert_motion_to_smplx(
+        motion=motion,
+        source_joint_names=source_joint_names,
+        smplx_to_source=joint_mapping,
+        source_global_rotation_offsets=rotation_offsets,
+        root_translation_scale=root_translation_scale,
+        coordinate_transform=coordinate_transform,
+        target_fps=target_fps,
+        betas=betas,
+        hand_pose=hand_pose,
+        gender=gender,
+    )
+    return serialize_smplx_npz(parameters)
+
+
+def serialize_smplx_npz(parameters: Mapping[str, np.ndarray]) -> bytes:
+    """Serialize SMPL-X parameters into compressed NPZ bytes."""
+    required_keys = {"poses", "trans", "gender", "mocap_framerate", "betas"}
+    missing = required_keys.difference(parameters)
+    if missing:
+        raise ValueError(
+            "SMPL-X parameters are missing keys: "
+            + ", ".join(sorted(missing))
+        )
+    with BytesIO() as buffer:
+        np.savez_compressed(
+            buffer, **{key: parameters[key] for key in required_keys}
+        )
+        return buffer.getvalue()
 
 
 def _validate_inputs(
@@ -185,32 +236,6 @@ def _validate_inputs(
         raise ValueError("Motion must have a positive frame_time")
     if motion.frame_count <= 0:
         raise ValueError("Motion must contain at least one motion frame")
-
-
-def _translation_channels_to_joint(motion: Motion, joint_index: int) -> np.ndarray:
-    hierarchy = motion.hierarchy
-    translations = np.zeros((motion.frame_count, 3), dtype=np.float64)
-    path = []
-    while joint_index >= 0:
-        path.append(joint_index)
-        joint_index = hierarchy.joints[joint_index].parent
-
-    for index in reversed(path):
-        joint = hierarchy.joints[index]
-        for channel_offset, channel in enumerate(joint.channels):
-            if channel.endswith("position"):
-                values = motion.values[
-                    :, hierarchy.channel_start(index) + channel_offset
-                ]
-                translations[:, position_channel_dimension(channel)] += np.nan_to_num(values, nan=0.0)
-    return translations
-
-
-def _matrices_to_axis_angles(matrices: np.ndarray) -> np.ndarray:
-    quaternions = quat.from_matrix(matrices)
-    quaternions = np.where(quaternions[..., :1] < 0.0, -quaternions, quaternions)
-    return quat.to_scaled_angle_axis(quaternions)
-
 
 def _frame_pose(value: np.ndarray | None, frame_count: int, width: int, label: str) -> np.ndarray:
     if value is None:

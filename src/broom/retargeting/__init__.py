@@ -23,7 +23,6 @@ from broom.retargeting.schemas import (
     MappingResult,
     RetargetResult,
 )
-from broom.retargeting.smplx import retarget_bvh_to_smplx
 from broom.retargeting.spacetime import (
     floor_constraint,
     joint_limit_constraint,
@@ -54,7 +53,6 @@ __all__ = (
     "mapped_joint_pairs",
     "position_constraint",
     "retarget_bvh_file",
-    "retarget_bvh_to_smplx",
     "retarget_motion",
     "retarget_motion_spacetime",
     "relational_constraint",
