@@ -28,6 +28,51 @@ def scale_skeleton(motion: Motion, factor: float) -> Motion:
     return Motion(scaled_hierarchy, values, motion.frame_time)
 
 
+def subtract_root_offset_from_translation(motion: Motion) -> Motion:
+    """Return a Motion whose root position channels are offset-relative.
+
+    Subtracts each component of ``hierarchy.root_joint.offset`` from the
+    matching root position channel. Use this when an external source stores
+    root position samples as absolute coordinates rather than Broom's
+    offset-plus-translation representation. The hierarchy is unchanged.
+    """
+    if not isinstance(motion, Motion):
+        raise TypeError("motion must be a Motion.")
+
+    hierarchy = motion.hierarchy
+    root = hierarchy.root_joint
+    root_start = hierarchy.channel_start(hierarchy.root)
+    values = motion.values.copy()
+    for channel_offset, channel_name in enumerate(root.channels):
+        if not channel_name.endswith("position"):
+            continue
+        axis_index = "XYZ".index(channel_name[0])
+        values[:, root_start + channel_offset] -= root.offset[axis_index]
+    return motion.with_values(values)
+
+
+def add_root_offset_to_translation(motion: Motion) -> Motion:
+    """Return a Motion whose root position channels include its root offset.
+
+    Adds each component of ``hierarchy.root_joint.offset`` to the matching
+    root position channel. This is the inverse of
+    :func:`subtract_root_offset_from_translation`.
+    """
+    if not isinstance(motion, Motion):
+        raise TypeError("motion must be a Motion.")
+
+    hierarchy = motion.hierarchy
+    root = hierarchy.root_joint
+    root_start = hierarchy.channel_start(hierarchy.root)
+    values = motion.values.copy()
+    for channel_offset, channel_name in enumerate(root.channels):
+        if not channel_name.endswith("position"):
+            continue
+        axis_index = "XYZ".index(channel_name[0])
+        values[:, root_start + channel_offset] += root.offset[axis_index]
+    return motion.with_values(values)
+
+
 def repeat_pose(
     hierarchy: Hierarchy,
     pose: np.ndarray | Sequence[float] | None,

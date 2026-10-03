@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 import re
 
@@ -11,41 +12,27 @@ from broom import Hierarchy
 from broom.retargeting.schemas import JointMatch, MappingResult
 
 
-def build_joint_mapping(
-    source_hierarchy: Hierarchy,
-    target_hierarchy: Hierarchy,
-    joint_map: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Return a source-to-target mapping for two hierarchies.
-
-    Explicit entries win. Remaining joints are matched by normalized names and
-    the namespace-tolerant matcher already used elsewhere in the BVH package.
-    """
-
-    return map_joints(
-        source_hierarchy=source_hierarchy,
-        target_hierarchy=target_hierarchy,
-        joint_map=joint_map,
-    ).mapping
-
-
 def map_joints(
     source_hierarchy: Hierarchy,
     target_hierarchy: Hierarchy,
-    joint_map: dict[str, str] | None = None,
+    known_joint_map: Mapping[str, str] | None = None,
     min_score: float = 0.65,
 ) -> MappingResult:
     """Map source joints to target joints with match confidence metadata.
 
-    The mapper prefers explicit matches, then exact normalized names,
+    Known pairs are validated and retained. The mapper then prefers exact normalized names,
     namespace-tolerant matching, and finally substring matches. Each target can
     be used only once.
     """
 
-    mapping, explicit_matches = _validate_explicit_mapping(
-        source_hierarchy=source_hierarchy,
-        target_hierarchy=target_hierarchy,
-        joint_map=joint_map or {},
+    if known_joint_map is not None:
+        validate_joint_mapping(
+            source_hierarchy, target_hierarchy, known_joint_map
+        )
+    mapping = dict(known_joint_map or {})
+    explicit_matches = tuple(
+        JointMatch(source, target, 1.0, "explicit")
+        for source, target in mapping.items()
     )
 
     used_targets = set(mapping.values())
@@ -78,9 +65,41 @@ def map_joints(
     return MappingResult(
         mapping=mapping,
         matches=tuple(sorted(matches, key=lambda match: source_order[match.source])),
-        unmapped_sources=unmapped_sources(source_hierarchy, mapping),
-        unmapped_targets=unmapped_targets(target_hierarchy, mapping),
+        unmapped_sources=tuple(
+            name for name in source_names if name not in mapping
+        ),
+        unmapped_targets=tuple(
+            name for name in target_names if name not in used_targets
+        ),
     )
+
+
+def validate_joint_mapping(
+    source_hierarchy: Hierarchy,
+    target_hierarchy: Hierarchy,
+    mapping: Mapping[str, str],
+) -> None:
+    """Raise ValueError when a joint mapping is not a literal one-to-one map."""
+    if not isinstance(mapping, Mapping):
+        raise ValueError("mapping must be a mapping of source joint names to target joint names.")
+
+    source_names = set(source_hierarchy.joint_names)
+    target_names = set(target_hierarchy.joint_names)
+    target_to_source: dict[str, str] = {}
+    for source_name, target_name in mapping.items():
+        if not isinstance(source_name, str) or not isinstance(target_name, str):
+            raise ValueError("mapping joint names must be strings.")
+        if source_name not in source_names:
+            raise ValueError(f"Unknown source joint {source_name!r}.")
+        if target_name not in target_names:
+            raise ValueError(f"Unknown target joint {target_name!r}.")
+        if target_name in target_to_source:
+            raise ValueError(
+                "Multiple source joints map to target joint "
+                f"{target_name!r}: {target_to_source[target_name]!r} and "
+                f"{source_name!r}."
+            )
+        target_to_source[target_name] = source_name
 
 
 def score_joint_match(source_name: str, target_name: str) -> JointMatch:
@@ -113,20 +132,6 @@ def score_joint_match(source_name: str, target_name: str) -> JointMatch:
     return JointMatch(source_name, target_name, 0.0, "none")
 
 
-def invert_mapping(source_to_target: dict[str, str]) -> dict[str, str]:
-    """Return ``target -> source`` and reject duplicate target mappings."""
-
-    target_to_source = {}
-    for source, target in source_to_target.items():
-        if target in target_to_source:
-            raise ValueError(
-                "Multiple source joints map to target joint "
-                f"{target!r}: {target_to_source[target]!r} and {source!r}."
-            )
-        target_to_source[target] = source
-    return target_to_source
-
-
 def _joint_key(name: str) -> str:
     """Normalize a joint name for fuzzy skeleton matching."""
 
@@ -141,70 +146,21 @@ def load_joint_mapping(path: str | Path) -> dict[str, str]:
     data = json.loads(Path(path).read_text())
     if not isinstance(data, dict):
         raise ValueError("Joint mapping file must contain a JSON object.")
-    return {str(source): str(target) for source, target in data.items()}
-
-
-def unmapped_sources(
-    source_hierarchy: Hierarchy,
-    source_to_target: dict[str, str],
-) -> tuple[str, ...]:
-    """Return source joints with no target mapping."""
-
-    return tuple(
-        name for name in source_hierarchy.joint_names if name not in source_to_target
-    )
-
-
-def unmapped_targets(
-    target_hierarchy: Hierarchy,
-    source_to_target: dict[str, str],
-) -> tuple[str, ...]:
-    """Return target joints with no source mapping."""
-
-    mapped_targets = set(source_to_target.values())
-    return tuple(
-        name for name in target_hierarchy.joint_names if name not in mapped_targets
-    )
-
-
-def _validate_explicit_mapping(
-    source_hierarchy: Hierarchy,
-    target_hierarchy: Hierarchy,
-    joint_map: dict[str, str],
-) -> tuple[dict[str, str], tuple[JointMatch, ...]]:
-    source_names = set(source_hierarchy.joint_names)
-    target_names = set(target_hierarchy.joint_names)
-    mapping = {}
-    matches = []
-
-    for source, target in joint_map.items():
-        source_name = _resolve_joint_name(source, source_names, "source")
-        target_name = _resolve_joint_name(target, target_names, "target")
-        mapping[source_name] = target_name
-        matches.append(JointMatch(source_name, target_name, 1.0, "explicit"))
-
-    invert_mapping(mapping)
-    return mapping, tuple(matches)
-
-
-def _resolve_joint_name(name: str, names: set[str], label: str) -> str:
-    if name in names:
-        return name
-
-    matches = [candidate for candidate in names if joint_name_matches(candidate, name)]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        raise ValueError(
-            f"Ambiguous {label} joint {name!r}; matched {', '.join(matches)}."
-        )
-    raise ValueError(f"Unknown {label} joint {name!r}.")
+    if not all(isinstance(source, str) and isinstance(target, str) for source, target in data.items()):
+        raise ValueError("Joint mapping file must contain string joint names.")
+    return dict(data)
 
 
 def _side(name: str) -> str | None:
-    if name.startswith("left"):
+    """Return the side marker found anywhere in a normalized joint name."""
+
+    has_left = "left" in name
+    has_right = "right" in name
+    if has_left == has_right:
+        return None
+    if has_left:
         return "left"
-    if name.startswith("right"):
+    if has_right:
         return "right"
     return None
 

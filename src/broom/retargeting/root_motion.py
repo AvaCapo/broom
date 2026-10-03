@@ -1,5 +1,7 @@
 """Root-motion transfer helpers for retargeting."""
 
+from collections.abc import Mapping
+
 import numpy as np
 
 from broom import Hierarchy, Motion
@@ -9,6 +11,46 @@ from broom.kinematics import compute_global_positions
 # TODO: Review name-based joint selection; these substrings are not universal
 # skeleton semantics and can exclude relevant joints from floor estimation.
 _FLOOR_JOINT_NAME_MARKERS = ("foot", "toe", "ankle", "heel")
+
+
+def transfer_mapped_translations(
+    source_motion: Motion,
+    target_hierarchy: Hierarchy,
+    source_to_target: Mapping[str, str],
+    target_values: np.ndarray,
+    scale: float,
+) -> None:
+    """Transfer mapped position channels into target values using ``scale``.
+
+    Root translation is rebased to its first source frame. Non-root position
+    channels retain their local values. Channels absent from either mapped joint
+    are left unchanged.
+    """
+
+    source_hierarchy = source_motion.hierarchy
+    scale = float(scale)
+    for source_name, target_name in source_to_target.items():
+        source_index = source_hierarchy.joint_index(source_name)
+        target_index = target_hierarchy.joint_index(target_name)
+        is_root_pair = (
+            source_index == source_hierarchy.root
+            and target_index == target_hierarchy.root
+        )
+        for axis in "XYZ":
+            try:
+                source_channel = source_hierarchy.channel_index(
+                    source_name, f"{axis}position"
+                )
+                target_channel = target_hierarchy.channel_index(
+                    target_name, f"{axis}position"
+                )
+            except KeyError:
+                continue
+
+            source_values = source_motion.values[:, source_channel]
+            if is_root_pair:
+                source_values = source_values - source_values[0]
+            target_values[:, target_channel] = source_values * scale
 
 
 def transfer_root_translation(

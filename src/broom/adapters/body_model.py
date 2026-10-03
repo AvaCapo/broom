@@ -1,4 +1,4 @@
-"""Retarget BVH joint rotations to the combined SMPL-X pose layout."""
+"""Retarget BVH joint rotations to the parametric Body pose layout."""
 
 from __future__ import annotations
 
@@ -12,15 +12,14 @@ from broom.kinematics import compute_global_transforms, compute_rest_joint_posit
 from broom.ops.resample import resample_fps
 from broom.rotations import quat
 
+BODY_JOINT_COUNT = 22
+POSE_SIZE = 165
 
-SMPLX_BODY_JOINT_COUNT = 22
-SMPLX_POSE_SIZE = 165
 
-
-def convert_motion_to_smplx(
+def convert_motion_to_ndarray(
     motion: Motion,
     source_joint_names: Sequence[str],
-    smplx_to_source: Sequence[tuple[str, str, int]],
+    body_to_source: Sequence[tuple[str, str, int]],
     *,
     source_global_rotation_offsets: np.ndarray | None = None,
     root_translation_scale: float = 1.0,
@@ -30,17 +29,17 @@ def convert_motion_to_smplx(
     hand_pose: np.ndarray | None = None,
     gender: str = "neutral",
 ) -> dict[str, np.ndarray]:
-    """Retarget a Motion to a compact AMASS-style SMPL-X dictionary.
+    """Retarget a Motion to a compact ndarray dictionary.
 
     ``source_joint_names`` defines the source order used by
-    ``source_global_rotation_offsets``. ``smplx_to_source`` defines the target
-    SMPL-X order as ``(target_name, source_name, target_parent_index)`` tuples.
-    The mapping must start with the SMPL-X pelvis and its corresponding source
-    pelvis-equivalent joint, followed by all 21 remaining SMPL-X body joints.
+    ``source_global_rotation_offsets``. ``body_to_source`` defines the target
+    body order as ``(target_name, source_name, target_parent_index)`` tuples.
+    The mapping must start with the Body pelvis and its corresponding source
+    pelvis-equivalent joint, followed by all 21 remaining Body joints.
     A source hierarchy may have an additional joint above the pelvis; canonical
     FK incorporates its transform into the pelvis global pose and trajectory.
 
-    Rotation offsets re-express source global joint frames in the SMPL-X
+    Rotation offsets re-express source global joint frames in the Body
     standard T-pose frame. Each matrix is applied as
     ``source_global @ offset.T``. Identity offsets may be omitted when the BVH
     already uses compatible standard joint frames.
@@ -48,14 +47,14 @@ def convert_motion_to_smplx(
     ``coordinate_transform`` is an optional proper 3D rotation applied in
     world space to the root orientation and translation. The returned keys are
     exactly ``poses``, ``trans``, ``gender``, ``mocap_framerate``, and
-    ``betas``. ``poses`` follows the standard 165D SMPL-X order: root, body,
+    ``betas``. ``poses`` follows the standard 165D Body order: root, body,
     jaw, eyes, left hand, right hand.
     """
 
     source_names = tuple(str(name) for name in source_joint_names)
     mapping = tuple(
         (str(target), str(source), int(parent))
-        for target, source, parent in smplx_to_source
+        for target, source, parent in body_to_source
     )
     _validate_inputs(motion, source_names, mapping)
     if target_fps is not None and (
@@ -128,13 +127,13 @@ def convert_motion_to_smplx(
     jaw_and_eyes = np.zeros((frame_count, 9), dtype=np.float64)
     hands = _frame_pose(hand_pose, frame_count, 90, "hand_pose")
     poses = np.concatenate((axis_angles, jaw_and_eyes, hands), axis=1)
-    if poses.shape != (frame_count, SMPLX_POSE_SIZE):
-        raise AssertionError(f"Combined SMPL-X poses have unexpected shape {poses.shape}")
+    if poses.shape != (frame_count, POSE_SIZE):
+        raise AssertionError(f"Combined Body poses have unexpected shape {poses.shape}")
 
     shape = (
         np.zeros(16, dtype=np.float32)
         if betas is None
-        else np.asarray(betas, dtype=np.float32).reshape(-1)
+        else np.array(betas, dtype=np.float32, copy=True).reshape(-1)
     )
     if shape.shape != (16,):
         raise ValueError(f"betas must contain 16 values, got shape {shape.shape}")
@@ -142,6 +141,7 @@ def convert_motion_to_smplx(
         raise ValueError("betas contains NaN or infinite values")
 
     fps = 1.0 / float(motion.frame_time)
+    # TODO: Verify the expected export behavior with and without FPS rounding.
     rounded_fps = round(fps)
     if abs(fps - rounded_fps) < 0.05:
         fps = float(rounded_fps)
@@ -168,10 +168,10 @@ def serialize_motion_to_npz(
     gender: str = "neutral",
 ) -> bytes:
     """Serialize a Motion into the adapter's compressed NPZ payload."""
-    parameters = convert_motion_to_smplx(
+    parameters = convert_motion_to_ndarray(
         motion=motion,
         source_joint_names=source_joint_names,
-        smplx_to_source=joint_mapping,
+        body_to_source=joint_mapping,
         source_global_rotation_offsets=rotation_offsets,
         root_translation_scale=root_translation_scale,
         coordinate_transform=coordinate_transform,
@@ -180,16 +180,16 @@ def serialize_motion_to_npz(
         hand_pose=hand_pose,
         gender=gender,
     )
-    return serialize_smplx_npz(parameters)
+    return serialize_ndarray_npz(parameters)
 
 
-def serialize_smplx_npz(parameters: Mapping[str, np.ndarray]) -> bytes:
-    """Serialize SMPL-X parameters into compressed NPZ bytes."""
+def serialize_ndarray_npz(parameters: Mapping[str, np.ndarray]) -> bytes:
+    """Serialize Body parameters into compressed NPZ bytes."""
     required_keys = {"poses", "trans", "gender", "mocap_framerate", "betas"}
     missing = required_keys.difference(parameters)
     if missing:
         raise ValueError(
-            "SMPL-X parameters are missing keys: "
+            "Body parameters are missing keys: "
             + ", ".join(sorted(missing))
         )
     with BytesIO() as buffer:
@@ -211,26 +211,26 @@ def _validate_inputs(
     ]
     if missing:
         raise ValueError(f"BVH is missing configured source joints: {', '.join(missing)}")
-    if len(mapping) != SMPLX_BODY_JOINT_COUNT:
+    if len(mapping) != BODY_JOINT_COUNT:
         raise ValueError(
-            f"smplx_to_source must define {SMPLX_BODY_JOINT_COUNT} body joints, got {len(mapping)}"
+            f"body_to_source must define {BODY_JOINT_COUNT} body joints, got {len(mapping)}"
         )
     target_names = [target for target, _, _ in mapping]
     if len(target_names) != len(set(target_names)):
-        raise ValueError("smplx_to_source target names must not contain duplicates")
+        raise ValueError("body_to_source target names must not contain duplicates")
     configured_sources = set(source_joint_names)
     unknown_sources = [source for _, source, _ in mapping if source not in configured_sources]
     if unknown_sources:
         raise ValueError(
-            "smplx_to_source references joints absent from source_joint_names: "
+            "body_to_source references joints absent from source_joint_names: "
             + ", ".join(unknown_sources)
         )
     if mapping[0][2] != -1:
-        raise ValueError("The first smplx_to_source entry must be the root with parent -1")
+        raise ValueError("The first body_to_source entry must be the root with parent -1")
     for index, (_, _, parent) in enumerate(mapping[1:], start=1):
         if parent < 0 or parent >= index:
             raise ValueError(
-                f"SMPL-X joint {index} has invalid parent {parent}; parents must precede children"
+                f"Body joint {index} has invalid parent {parent}; parents must precede children"
             )
     if motion.frame_time <= 0.0:
         raise ValueError("Motion must have a positive frame_time")

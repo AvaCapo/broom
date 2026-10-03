@@ -8,6 +8,7 @@ B-spline displacement is optimized over the complete clip.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.interpolate import BSpline
@@ -208,7 +209,7 @@ def euler_rotvec_jacobian(
 
 def retarget_motion_spacetime(
     source_motion: Motion,
-    target_motion: Motion,
+    target_hierarchy: Hierarchy,
     constraints: Sequence[Mapping[str, object]],
     *,
     scale: float | None = None,
@@ -224,6 +225,9 @@ def retarget_motion_spacetime(
     verbose: int = 0,
 ) -> OptimizeResult:
     """Retarget equal-topology BVH motion with exponential B-spline correction.
+
+    ``target_hierarchy`` supplies target topology, offsets and channel layout;
+    samples and frame time come from ``source_motion``.
 
     Three-axis joints use R_initial @ Exp(phi), with XYZ rotvec coefficients
     in radians. One-axis joints retain their hinge axis; two-axis joints are
@@ -275,16 +279,28 @@ def retarget_motion_spacetime(
     ``control_points``, ``constraint_residuals``, and ``scale``.
     """
 
-    if source_motion.frame_count < 2:
-        raise ValueError("Space-time retargeting requires at least two source frames.")
-    if control_point_spacing <= 0:
-        raise ValueError("control_point_spacing must be positive.")
-    if not np.isfinite(control_weight) or control_weight < 0.0:
-        raise ValueError("control_weight cannot be negative.")
-    if not np.isfinite(constraint_tolerance) or constraint_tolerance <= 0.0:
-        raise ValueError("constraint_tolerance must be finite and positive.")
+    initial, resolved_scale = _prepare_equal_topology_motion(
+        source_motion, target_hierarchy, scale=scale,
+    )
+    result = _solve_motion_spacetime(
+        initial, constraints,
+        control_point_spacing=control_point_spacing,
+        control_weight=control_weight,
+        parameter_weights=parameter_weights,
+        constraint_tolerance=float(constraint_tolerance) * resolved_scale,
+        smoothing_sigma=smoothing_sigma,
+        max_nfev=max_nfev,
+        ftol=ftol, xtol=xtol, gtol=gtol, verbose=verbose,
+    )
+    result.scale = resolved_scale
+    return result
+
+
+def _prepare_equal_topology_motion(
+    source_motion: Motion, target_hierarchy: Hierarchy, *, scale: float | None,
+) -> tuple[Motion, float]:
+    """Copy source channels onto target geometry and scale absolute root translation."""
     source_hierarchy = source_motion.hierarchy
-    target_hierarchy = target_motion.hierarchy
     if source_hierarchy.joint_count != target_hierarchy.joint_count:
         raise ValueError("Source and target skeletons have different joint counts.")
     if source_hierarchy.total_channels != target_hierarchy.total_channels:
@@ -307,39 +323,6 @@ def retarget_motion_spacetime(
                 f"Joint {source_joint.name!r} has different channels in the target."
             )
 
-    frame_count = source_motion.frame_count
-    root_joint = target_hierarchy.root_joint
-    root_position_channels = {
-        channel[0]: target_hierarchy.channel_start(target_hierarchy.root)
-        + channel_offset
-        for channel_offset, channel in enumerate(root_joint.channels)
-        if channel.endswith("position")
-    }
-    variable_indices = np.asarray(
-        [
-            target_hierarchy.channel_start(joint_index) + channel_offset
-            for joint_index, joint in enumerate(target_hierarchy.joints)
-            for channel_offset, channel in enumerate(joint.channels)
-            if channel.endswith("rotation")
-            or (joint.parent == -1 and channel.endswith("position"))
-        ],
-        dtype=np.int64,
-    )
-    if variable_indices.size == 0:
-        raise ValueError("Target skeleton has no root translation or rotation channels.")
-
-    if parameter_weights is None:
-        control_weights = np.ones(variable_indices.size, dtype=np.float64)
-    else:
-        control_weights = np.asarray(parameter_weights, dtype=np.float64)
-        if control_weights.shape != (variable_indices.size,):
-            raise ValueError(
-                "parameter_weights must have one value per optimized channel, got "
-                f"{control_weights.shape} and {variable_indices.size}."
-            )
-        if np.any(~np.isfinite(control_weights)) or np.any(control_weights < 0.0):
-            raise ValueError("parameter_weights cannot contain negative values.")
-
     resolved_scale = (
         estimate_skeleton_scale_ratio(source_hierarchy, target_hierarchy)
         if scale is None
@@ -350,9 +333,22 @@ def retarget_motion_spacetime(
         raise ValueError("Source motion must contain finite values.")
     if not np.isfinite(resolved_scale) or resolved_scale <= 0:
         raise ValueError("scale must be finite and positive.")
-    scaled_constraint_tolerance = float(constraint_tolerance) * resolved_scale
-    default_spatial_weight = 1.0 / scaled_constraint_tolerance**2
-    constraints = tuple(
+    root_joint = target_hierarchy.root_joint
+    root_position_channels = {
+        channel[0]: target_hierarchy.channel_start(target_hierarchy.root)
+        + channel_offset
+        for channel_offset, channel in enumerate(root_joint.channels)
+        if channel.endswith("position")
+    }
+    for channel_index in root_position_channels.values():
+        initial_motion[:, channel_index] *= resolved_scale
+    return Motion(target_hierarchy, initial_motion, source_motion.frame_time), resolved_scale
+
+
+def _with_spatial_constraint_weights(constraints, constraint_tolerance):
+    """Copy declarations and fill spatial weights using a target-unit tolerance."""
+    default_spatial_weight = 1.0 / constraint_tolerance**2
+    return tuple(
         {
             **constraint,
             **(
@@ -364,13 +360,29 @@ def retarget_motion_spacetime(
         }
         for constraint in constraints
     )
-    for channel_index in root_position_channels.values():
-        initial_motion[:, channel_index] *= resolved_scale
 
+
+def _fit_root_translation_to_constraints(motion, constraints, *, smoothing_sigma):
+    """Fit available root coordinates to position targets before spline correction.
+
+    Weighted observations are interpolated and smoothed independently per axis.
+    Floor and stationary constraints do not provide position observations.
+    The returned Motion owns its values; the input is never modified.
+    """
+    target_hierarchy = motion.hierarchy
+    frame_count = motion.frame_count
+    initial_motion = motion.values.copy()
+    root_joint = target_hierarchy.root_joint
+    root_position_channels = {
+        channel[0]: target_hierarchy.channel_start(target_hierarchy.root)
+        + channel_offset
+        for channel_offset, channel in enumerate(root_joint.channels)
+        if channel.endswith("position")
+    }
     # Estimate the translation center from explicitly positioned features.
     translation = np.zeros((frame_count, 3), dtype=np.float64)
     translation_weights = np.zeros((frame_count, 3), dtype=np.float64)
-    scaled_positions = compute_global_positions(target_motion.with_values(initial_motion))
+    scaled_positions = compute_global_positions(motion)
     # Validate before centering; position targets and axes share the residual API.
     _constraint_residuals(target_hierarchy, initial_motion, scaled_positions, constraints)
     for constraint in constraints:
@@ -404,6 +416,11 @@ def retarget_motion_spacetime(
     for axis, channel_index in root_position_channels.items():
         initial_motion[:, channel_index] += translation[:, "XYZ".index(axis)]
 
+    return motion.with_values(initial_motion)
+
+
+def _build_spline_basis(frame_count, control_point_spacing):
+    """Build the existing clamped cubic basis in frame coordinates."""
     degree = 3
     breakpoints = np.arange(0, frame_count - 1, control_point_spacing, dtype=np.float64)
     if breakpoints.size == 0 or breakpoints[-1] != frame_count - 1:
@@ -420,7 +437,52 @@ def retarget_motion_spacetime(
         knots,
         degree,
     ).toarray()
-    control_count = basis.shape[1]
+    return basis
+
+
+@dataclass(frozen=True)
+class _SpacetimeParameters:
+    """Internal channel ordering and rotation reference shared by solver stages."""
+
+    variable_indices: np.ndarray
+    control_weights: np.ndarray
+    parents: np.ndarray
+    variable_joints: np.ndarray
+    translation_mask: np.ndarray
+    translation_axes: np.ndarray
+    initial_local: np.ndarray
+    rotation_data: dict[int, tuple[np.ndarray, np.ndarray, str, np.ndarray]]
+
+
+def _prepare_spacetime_parameters(motion, parameter_weights):
+    """Collect root translations, rotation slots, weights and channel references."""
+    target_hierarchy = motion.hierarchy
+    frame_count = motion.frame_count
+    initial_motion = motion.values
+    variable_indices = np.asarray(
+        [
+            target_hierarchy.channel_start(joint_index) + channel_offset
+            for joint_index, joint in enumerate(target_hierarchy.joints)
+            for channel_offset, channel in enumerate(joint.channels)
+            if channel.endswith("rotation")
+            or (joint.parent == -1 and channel.endswith("position"))
+        ],
+        dtype=np.int64,
+    )
+    if variable_indices.size == 0:
+        raise ValueError("Target skeleton has no root translation or rotation channels.")
+
+    if parameter_weights is None:
+        control_weights = np.ones(variable_indices.size, dtype=np.float64)
+    else:
+        control_weights = np.asarray(parameter_weights, dtype=np.float64)
+        if control_weights.shape != (variable_indices.size,):
+            raise ValueError(
+                "parameter_weights must have one value per optimized channel, got "
+                f"{control_weights.shape} and {variable_indices.size}."
+            )
+        if np.any(~np.isfinite(control_weights)) or np.any(control_weights < 0.0):
+            raise ValueError("parameter_weights cannot contain negative values.")
 
     parents = np.array([joint.parent for joint in target_hierarchy.joints], dtype=int)
     if np.count_nonzero(parents == -1) != 1 or any(p >= j or p < -1 for j, p in enumerate(parents)):
@@ -460,6 +522,20 @@ def retarget_motion_spacetime(
         ).as_matrix()
         rotation_data[j] = (channels, slots, order, reference)
 
+    return _SpacetimeParameters(
+        variable_indices=variable_indices,
+        control_weights=control_weights,
+        parents=parents,
+        variable_joints=variable_joints,
+        translation_mask=translation_mask,
+        translation_axes=translation_axes,
+        initial_local=initial_local,
+        rotation_data=rotation_data,
+    )
+
+
+def _prepare_spacetime_constraints(target_hierarchy, constraints, rotation_data):
+    """Resolve target indices and arrays after full-motion constraint validation."""
     prepared = []
     names = set()
     for index, spec in enumerate(constraints):
@@ -506,6 +582,24 @@ def retarget_motion_spacetime(
             raise ValueError(f"{name}: joint has no rotation channels.")
         prepared.append(spec)
 
+    return prepared
+
+
+def _make_spacetime_evaluator(motion, parameters, basis, prepared, control_weight):
+    """Create a cached joint residual/Jacobian evaluator for one optimization."""
+    target_hierarchy = motion.hierarchy
+    frame_count = motion.frame_count
+    initial_motion = motion.values
+    control_count = basis.shape[1]
+    parameter_count = parameters.variable_indices.size
+    variable_indices = parameters.variable_indices
+    control_weights = parameters.control_weights
+    parents = parameters.parents
+    variable_joints = parameters.variable_joints
+    translation_mask = parameters.translation_mask
+    translation_axes = parameters.translation_axes
+    initial_local = parameters.initial_local
+    rotation_data = parameters.rotation_data
     diagonal = np.tile(np.sqrt(control_weight * control_weights), control_count)
     regularization_jac = diags(diagonal, format="csr")
     cached_x = None
@@ -528,7 +622,7 @@ def retarget_motion_spacetime(
             corrections[j] = phi
             local[:, j] = initial_local[:, j] @ Rotation.from_rotvec(phi).as_matrix()
         local_translations, _ = _decode_local_transforms(
-            target_motion.with_values(motion_values)
+            motion.with_values(motion_values)
         )
         positions, global_rotations = compute_global_transforms_from_local(
             target_hierarchy,
@@ -651,6 +745,91 @@ def retarget_motion_spacetime(
         cached = residual, jac, motion_values, local, blocks
         return cached
 
+    return evaluate
+
+
+def _finalize_spacetime_result(solver_result, motion, parameters, basis, evaluate):
+    """Encode optimized rotations and attach motion, coefficients and diagnostics."""
+    target_hierarchy = motion.hierarchy
+    initial_motion = motion.values
+    control_count = basis.shape[1]
+    parameter_count = parameters.variable_indices.size
+    rotation_data = parameters.rotation_data
+    translation_mask = parameters.translation_mask
+    variable_joints = parameters.variable_joints
+    translation_axes = parameters.translation_axes
+    _, _, motion_values, local, blocks = evaluate(solver_result.x)
+    control_points = solver_result.x.reshape(control_count, parameter_count)
+    displacement = basis @ control_points
+    # Convert to BVH only at the boundary, not in positional residual evaluation.
+    for j, (channels, slots, order, reference) in rotation_data.items():
+        if len(slots) == 1:
+            angles = reference + displacement[:, slots]
+        else:
+            angles = matrices_to_euler_near_reference(local[:, j], order, reference)
+        unchanged = np.all(displacement[:, slots] == 0, axis=1)
+        angles[unchanged] = reference[unchanged]
+        motion_values[:, channels] = np.where(
+            unchanged[:, None], initial_motion[:, channels], np.rad2deg(angles)
+        )
+    solver_result.motion = Motion(
+        target_hierarchy, motion_values, motion.frame_time
+    )
+    solver_result.initial_motion_values = initial_motion
+    solver_result.control_points = control_points
+    solver_result.constraint_residuals = blocks
+    solver_result.rotation_parameterization = "right_composed_rotvec_radians"
+    parameter_names = [None] * parameter_count
+    for slot in np.flatnonzero(translation_mask):
+        parameter_names[slot] = (
+            target_hierarchy.joints[variable_joints[slot]].name,
+            "translation_" + "XYZ"[np.argmax(translation_axes[slot])],
+        )
+    for j, (_, slots, order, _) in rotation_data.items():
+        for slot, axis in zip(slots, "XYZ" if len(slots) == 3 else order):
+            parameter_names[slot] = (target_hierarchy.joints[j].name, "rotvec_" + axis)
+    solver_result.parameter_names = tuple(parameter_names)
+    return solver_result
+
+
+def _solve_motion_spacetime(
+    motion: Motion,
+    constraints: Sequence[Mapping[str, object]],
+    *,
+    control_point_spacing: int = 4,
+    control_weight: float = 1.0e-3,
+    parameter_weights: np.ndarray | Sequence[float] | None = None,
+    constraint_tolerance: float = DEFAULT_CONSTRAINT_TOLERANCE,
+    smoothing_sigma: float = 1.0,
+    max_nfev: int | None = None,
+    ftol: float = 1.0e-6,
+    xtol: float = 1.0e-6,
+    gtol: float = 1.0e-6,
+    verbose: int = 0,
+) -> OptimizeResult:
+    """Run mandatory root fitting and the shared spline correction in target units."""
+    if motion.frame_count < 2:
+        raise ValueError("Space-time retargeting requires at least two source frames.")
+    if control_point_spacing <= 0:
+        raise ValueError("control_point_spacing must be positive.")
+    if not np.isfinite(control_weight) or control_weight < 0.0:
+        raise ValueError("control_weight cannot be negative.")
+    if not np.isfinite(constraint_tolerance) or constraint_tolerance <= 0.0:
+        raise ValueError("constraint_tolerance must be finite and positive.")
+    if not np.all(np.isfinite(motion.values)):
+        raise ValueError("Source motion must contain finite values.")
+    constraints = _with_spatial_constraint_weights(constraints, constraint_tolerance)
+    initial = _fit_root_translation_to_constraints(
+        motion, constraints, smoothing_sigma=smoothing_sigma,
+    )
+    basis = _build_spline_basis(initial.frame_count, control_point_spacing)
+    parameters = _prepare_spacetime_parameters(initial, parameter_weights)
+    prepared = _prepare_spacetime_constraints(
+        initial.hierarchy, constraints, parameters.rotation_data,
+    )
+    evaluate = _make_spacetime_evaluator(initial, parameters, basis, prepared, control_weight)
+    control_count = basis.shape[1]
+    parameter_count = parameters.variable_indices.size
     x0 = np.zeros(control_count * parameter_count)
     if any(spec["weight"] > 0 for spec in prepared):
         solver_result = least_squares(
@@ -672,42 +851,12 @@ def retarget_motion_spacetime(
             optimality=0.0, active_mask=np.zeros_like(x0), nfev=0, njev=0,
             success=True, status=1, message="No positive-weight constraints; returned initial motion.",
         )
-    _, _, motion_values, local, blocks = evaluate(solver_result.x)
-    control_points = solver_result.x.reshape(control_count, parameter_count)
-    displacement = basis @ control_points
-    # Convert to BVH only at the boundary, not in positional residual evaluation.
-    for j, (channels, slots, order, reference) in rotation_data.items():
-        if len(slots) == 1:
-            angles = reference + displacement[:, slots]
-        else:
-            angles = matrices_to_euler_near_reference(local[:, j], order, reference)
-        unchanged = np.all(displacement[:, slots] == 0, axis=1)
-        angles[unchanged] = reference[unchanged]
-        motion_values[:, channels] = np.where(
-            unchanged[:, None], initial_motion[:, channels], np.rad2deg(angles)
-        )
-    solver_result.motion = Motion(
-        target_hierarchy, motion_values, source_motion.frame_time
-    )
-    solver_result.initial_motion_values = initial_motion
-    solver_result.control_points = control_points
-    solver_result.constraint_residuals = blocks
-    solver_result.scale = resolved_scale
-    solver_result.control_point_spacing = control_point_spacing
-    solver_result.constraint_tolerance = scaled_constraint_tolerance
-    solver_result.default_spatial_weight = default_spatial_weight
-    solver_result.rotation_parameterization = "right_composed_rotvec_radians"
-    parameter_names = [None] * parameter_count
-    for slot in np.flatnonzero(translation_mask):
-        parameter_names[slot] = (
-            target_hierarchy.joints[variable_joints[slot]].name,
-            "translation_" + "XYZ"[np.argmax(translation_axes[slot])],
-        )
-    for j, (_, slots, order, _) in rotation_data.items():
-        for slot, axis in zip(slots, "XYZ" if len(slots) == 3 else order):
-            parameter_names[slot] = (target_hierarchy.joints[j].name, "rotvec_" + axis)
-    solver_result.parameter_names = tuple(parameter_names)
-    return solver_result
+    result = _finalize_spacetime_result(solver_result, initial, parameters, basis, evaluate)
+    result.scale = 1.0
+    result.control_point_spacing = control_point_spacing
+    result.constraint_tolerance = constraint_tolerance
+    result.default_spatial_weight = 1.0 / constraint_tolerance**2
+    return result
 
 
 def _constraint_residuals(
@@ -832,16 +981,14 @@ def solve_motion_spacetime(
 
     ``reference_motion`` is both the initial motion and target skeleton, so
     this entry point has no equal-topology source requirement. It deliberately
-    keeps all residual evaluation and sparse optimization in
-    :func:`retarget_motion_spacetime`.
+    shares mandatory root fitting, residual evaluation and sparse optimization
+    with :func:`retarget_motion_spacetime`.
     """
 
     if "scale" in solver_options:
         raise ValueError("solve_motion_spacetime uses target-space reference motion; omit scale.")
-    return retarget_motion_spacetime(
-        reference_motion,
+    return _solve_motion_spacetime(
         reference_motion,
         constraints,
-        scale=1.0,
         **solver_options,
     )

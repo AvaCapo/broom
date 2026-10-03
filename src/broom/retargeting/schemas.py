@@ -25,10 +25,10 @@ class MappingResult:
 
 @dataclass(frozen=True)
 class RetargetResult:
-    """Result of retargeting source motion onto a target BVH skeleton."""
+    """Result of automatic motion retargeting onto a target hierarchy."""
 
     motion: Motion
     joint_map: dict[str, str]
     unmapped_source_joints: tuple[str, ...]
     unmapped_target_joints: tuple[str, ...]
-    root_scale: float
+    scale: float

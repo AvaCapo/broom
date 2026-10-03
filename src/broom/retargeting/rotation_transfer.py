@@ -7,7 +7,6 @@ from broom import Hierarchy, Motion
 from broom.rotations.euler import unwrap_euler_degrees, wrap_degrees
 from broom.math_helpers import normalize_vectors
 from broom.kinematics import compute_rest_joint_positions
-from broom.retargeting.mapping import invert_mapping
 
 
 def transfer_fk_rotations(
@@ -20,7 +19,10 @@ def transfer_fk_rotations(
     """Transfer source Euler rotations onto the target skeleton."""
 
     source_hierarchy = source_motion.hierarchy
-    target_to_source = invert_mapping(source_to_target)
+    target_to_source = {
+        target_name: source_name
+        for source_name, target_name in source_to_target.items()
+    }
     source_rest_frames = estimate_rest_frames(source_hierarchy)
     target_rest_frames = estimate_rest_frames(target_hierarchy)
 
@@ -60,7 +62,10 @@ def transfer_fk_rotations(
         )
         target_motion[:, list(target_indices)] = converted
 
-# TODO: should we move rotation functions to the rotation module?
+# TODO: Separate generic Euler representation conversion from retarget-specific
+# rest-frame correction. Define correction through Joint.local_orientation and
+# canonical FK/rest transforms instead of heuristic bone-direction frames.
+# Reuse the existing kinematics and rotations APIs for rest-pose computation.
 def convert_euler_degrees(
     angles: np.ndarray,
     source_order: str,

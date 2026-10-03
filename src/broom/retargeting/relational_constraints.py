@@ -22,8 +22,8 @@ def build_relational_constraints(
     weight: float = 1.0,
 ) -> list[dict[str, object]]:
     """Build source-normalized, target-space relational constraint dictionaries."""
-    # TODO: Validate mapping names here too, so this public helper does not
-    # rely on semantic_skeleton_projection having validated them first.
+    # TODO: Validate mapping names here instead of relying on a preceding
+    # mapped-chain retarget call.
     if not 0 <= tau_on < tau_off or not np.isfinite((tau_on, tau_off, weight)).all() or weight < 0:
         raise ValueError("Require finite weight and 0 <= tau_on < tau_off.")
     endpoints = {

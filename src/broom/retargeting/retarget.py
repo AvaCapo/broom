@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+
 import numpy as np
 
 from broom import Hierarchy, Motion
@@ -11,140 +13,160 @@ from broom.ops.skeleton_geometry import estimate_skeleton_scale_ratio
 from broom.retargeting.mapping import (
     load_joint_mapping,
     map_joints,
-    unmapped_sources,
-    unmapped_targets,
+    validate_joint_mapping,
 )
 from broom.retargeting.root_motion import (
     align_root_to_floor,
-    transfer_root_translation,
+    transfer_mapped_translations,
 )
-from broom.retargeting.rotation_transfer import (
-    transfer_fk_rotations,
-)
+from broom.retargeting.rotation_transfer import transfer_fk_rotations
 from broom.retargeting.schemas import RetargetResult
 
 
-def retarget_motion(
+def retarget_mapped_motion(
     source_motion: Motion,
-    target_motion: Motion,
-    joint_map: dict[str, str] | None = None,
-    root_translation: str = "scaled",
-    root_scale: float | None = None,
-    rotation_correction: str = "rest_pose",
-    initial_pose: str = "zero",
-    floor_align: bool = True,
-    strict: bool = False,
+    target_hierarchy: Hierarchy,
+    joint_map: Mapping[str, str],
     *,
+    scale: float = 1.0,
+    rotation_correction: str = "rest_pose",
+    floor_height: float | None = None,
     floor_up_axis: str = "Y",
     floor_use_rest_pose: bool = False,
     floor_first_frame_only: bool = True,
-) -> RetargetResult:
-    """Transfer source motion onto a target skeleton.
+) -> Motion:
+    """Transfer a Motion through an explicit source-to-target joint mapping.
 
-    ``joint_map`` uses source joint names as keys and target joint names as
-    values. If it is omitted, joints are matched by normalized names.
-    When floor_align is enabled, floor_first_frame_only selects the first
-    output frame instead of the whole clip for floor estimation;
-    floor_use_rest_pose additionally includes rest pose. floor_up_axis selects
-    the coordinate axis normal to the floor. Defaults preserve first-frame-only
-    estimation without rest pose and a Y-up floor.
+    Position and rotation channels are transferred only for mapped joints. All
+    transferred position values use ``scale``; root translation is relative to
+    the first source frame. When ``floor_height`` is not None, the result is
+    aligned to that coordinate along ``floor_up_axis``. The returned Motion
+    uses ``target_hierarchy`` and the source frame time.
     """
 
-    if source_motion.frame_count <= 0:
-        raise ValueError("Source Motion does not contain motion frames.")
+    validate_joint_mapping(
+        source_motion.hierarchy, target_hierarchy, joint_map
+    )
+    try:
+        scale = float(scale)
+    except (TypeError, ValueError) as error:
+        raise ValueError("scale must be a finite positive number.") from error
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("scale must be a finite positive number.")
 
-    root_translation = root_translation.lower()
-    if root_translation not in {"scaled", "copy", "none"}:
-        raise ValueError("root_translation must be one of: 'scaled', 'copy', 'none'.")
-
+    if not isinstance(rotation_correction, str):
+        raise ValueError("rotation_correction must be 'rest_pose' or 'none'.")
     rotation_correction = rotation_correction.lower()
     if rotation_correction not in {"rest_pose", "none"}:
-        raise ValueError("rotation_correction must be one of: 'rest_pose', 'none'.")
+        raise ValueError("rotation_correction must be 'rest_pose' or 'none'.")
 
-    initial_pose = initial_pose.lower()
-    if initial_pose not in {"zero", "first_frame"}:
-        raise ValueError("initial_pose must be one of: 'zero', 'first_frame'.")
-
-    mapping_result = map_joints(
-        source_hierarchy=source_motion.hierarchy,
-        target_hierarchy=target_motion.hierarchy,
-        joint_map=joint_map,
+    target_values = np.zeros(
+        (source_motion.frame_count, target_hierarchy.total_channels),
+        dtype=np.float64,
     )
-    source_to_target = mapping_result.mapping
-    if strict:
-        _raise_if_unmapped(
-            source_hierarchy=source_motion.hierarchy,
-            target_hierarchy=target_motion.hierarchy,
-            source_to_target=source_to_target,
-        )
-
-    if initial_pose == "zero":
-        target_values = np.zeros(
-            (source_motion.frame_count, target_motion.hierarchy.total_channels),
-            dtype=np.float64,
-        )
-    else:
-        if target_motion.frame_count <= 0:
-            raise ValueError(
-                "Target Motion must contain at least one motion frame "
-                "when initial_pose='first_frame'."
-            )
-        template_pose = np.nan_to_num(target_motion.values[0], nan=0.0)
-        target_values = np.repeat(
-            template_pose[None, :],
-            source_motion.frame_count,
-            axis=0,
-        )
+    source_to_target = dict(joint_map)
     transfer_fk_rotations(
         source_motion=source_motion,
-        target_hierarchy=target_motion.hierarchy,
+        target_hierarchy=target_hierarchy,
         source_to_target=source_to_target,
         target_motion=target_values,
         rotation_correction=rotation_correction,
     )
-
-    scale = float(root_scale) if root_scale is not None else 1.0
-    if root_translation == "scaled":
-        if root_scale is None:
-            scale = estimate_skeleton_scale_ratio(
-                source_hierarchy=source_motion.hierarchy,
-                target_hierarchy=target_motion.hierarchy,
-            )
-        transfer_root_translation(
-            source_motion=source_motion,
-            target_hierarchy=target_motion.hierarchy,
-            target_motion=target_values,
-            scale=scale,
-        )
-    elif root_translation == "copy":
-        transfer_root_translation(
-            source_motion=source_motion,
-            target_hierarchy=target_motion.hierarchy,
-            target_motion=target_values,
-            scale=1.0,
-        )
-    output_motion = Motion(
-        target_motion.hierarchy,
-        target_values,
-        source_motion.frame_time,
+    transfer_mapped_translations(
+        source_motion=source_motion,
+        target_hierarchy=target_hierarchy,
+        source_to_target=source_to_target,
+        target_values=target_values,
+        scale=scale,
     )
-    if floor_align:
+    output_motion = Motion(
+        target_hierarchy, target_values, source_motion.frame_time
+    )
+    if floor_height is not None:
         output_motion = align_root_to_floor(
             output_motion,
+            floor_height=floor_height,
             up_axis=floor_up_axis,
             use_rest_pose=floor_use_rest_pose,
             first_frame_only=floor_first_frame_only,
         )
+    return output_motion
+
+
+def retarget_motion(
+    source_motion: Motion,
+    target_hierarchy: Hierarchy,
+    known_joint_map: Mapping[str, str] | None = None,
+    *,
+    min_score: float = 0.65,
+    scale: float | None = None,
+    auto_scale: bool = True,
+    rotation_correction: str = "rest_pose",
+    floor_align: bool = True,
+    floor_height: float = 0.0,
+    strict: bool = False,
+    floor_up_axis: str = "Y",
+    floor_use_rest_pose: bool = False,
+    floor_first_frame_only: bool = True,
+) -> RetargetResult:
+    """Automatically map and retarget source motion onto a target hierarchy.
+
+    ``known_joint_map`` fixes explicit source-to-target pairs before automatic
+    mapping. Choose exactly one scaling policy: set ``auto_scale=True`` without
+    ``scale`` to estimate skeleton scale, or set ``auto_scale=False`` together
+    with an explicit positive ``scale``. When ``floor_align`` is enabled,
+    ``floor_height`` selects the output floor coordinate.
+    """
+
+    if not isinstance(auto_scale, bool):
+        raise ValueError("auto_scale must be a bool.")
+    if auto_scale and scale is not None:
+        raise ValueError("Pass either auto_scale=True or an explicit scale, not both.")
+    if not auto_scale and scale is None:
+        raise ValueError("scale is required when auto_scale is False.")
+
+    mapping_result = map_joints(
+        source_hierarchy=source_motion.hierarchy,
+        target_hierarchy=target_hierarchy,
+        known_joint_map=known_joint_map,
+        min_score=min_score,
+    )
+    if strict and (
+        mapping_result.unmapped_sources or mapping_result.unmapped_targets
+    ):
+        raise ValueError(
+            "Retargeting mapping is incomplete. "
+            "Unmapped source joints: "
+            f"{', '.join(mapping_result.unmapped_sources) or 'none'}. "
+            "Unmapped target joints: "
+            f"{', '.join(mapping_result.unmapped_targets) or 'none'}."
+        )
+
+    resolved_scale = (
+        estimate_skeleton_scale_ratio(
+            source_hierarchy=source_motion.hierarchy,
+            target_hierarchy=target_hierarchy,
+        )
+        if auto_scale
+        else scale
+    )
+    output_motion = retarget_mapped_motion(
+        source_motion=source_motion,
+        target_hierarchy=target_hierarchy,
+        joint_map=mapping_result.mapping,
+        scale=resolved_scale,
+        rotation_correction=rotation_correction,
+        floor_height=floor_height if floor_align else None,
+        floor_up_axis=floor_up_axis,
+        floor_use_rest_pose=floor_use_rest_pose,
+        floor_first_frame_only=floor_first_frame_only,
+    )
     return RetargetResult(
         motion=output_motion,
-        joint_map=source_to_target,
-        unmapped_source_joints=unmapped_sources(
-            source_motion.hierarchy, source_to_target
-        ),
-        unmapped_target_joints=unmapped_targets(
-            target_motion.hierarchy, source_to_target
-        ),
-        root_scale=scale,
+        joint_map=mapping_result.mapping,
+        unmapped_source_joints=mapping_result.unmapped_sources,
+        unmapped_target_joints=mapping_result.unmapped_targets,
+        scale=float(resolved_scale),
     )
 
 
@@ -152,13 +174,14 @@ def retarget_bvh_file(
     source_path: str | Path,
     target_path: str | Path,
     output_path: str | Path,
-    joint_map: dict[str, str] | None = None,
+    known_joint_map: Mapping[str, str] | None = None,
     mapping_path: str | Path | None = None,
-    root_translation: str = "scaled",
-    root_scale: float | None = None,
+    min_score: float = 0.65,
+    scale: float | None = None,
+    auto_scale: bool = True,
     rotation_correction: str = "rest_pose",
-    initial_pose: str = "zero",
     floor_align: bool = True,
+    floor_height: float = 0.0,
     strict: bool = False,
     precision: int = 6,
     *,
@@ -166,27 +189,25 @@ def retarget_bvh_file(
     floor_use_rest_pose: bool = False,
     floor_first_frame_only: bool = True,
 ) -> RetargetResult:
-    """Load two BVH files, retarget the motion, and write the output BVH.
+    """Load BVH motions, retarget onto the target hierarchy, and write BVH."""
 
-    Floor alignment options are forwarded to retarget_motion.
-    """
-
-    if joint_map is not None and mapping_path is not None:
-        raise ValueError("Pass either joint_map or mapping_path, not both.")
+    if known_joint_map is not None and mapping_path is not None:
+        raise ValueError("Pass either known_joint_map or mapping_path, not both.")
 
     source_motion = load_bvh(source_path)
-    target_motion = load_bvh(target_path)
-    mapping = load_joint_mapping(mapping_path) if mapping_path else joint_map
+    target_hierarchy = load_bvh(target_path).hierarchy
+    mapping = load_joint_mapping(mapping_path) if mapping_path else known_joint_map
 
     result = retarget_motion(
         source_motion=source_motion,
-        target_motion=target_motion,
-        joint_map=mapping,
-        root_translation=root_translation,
-        root_scale=root_scale,
+        target_hierarchy=target_hierarchy,
+        known_joint_map=mapping,
+        min_score=min_score,
+        scale=scale,
+        auto_scale=auto_scale,
         rotation_correction=rotation_correction,
-        initial_pose=initial_pose,
         floor_align=floor_align,
+        floor_height=floor_height,
         strict=strict,
         floor_up_axis=floor_up_axis,
         floor_use_rest_pose=floor_use_rest_pose,
@@ -194,18 +215,3 @@ def retarget_bvh_file(
     )
     write_bvh(result.motion, output_path, precision=precision)
     return result
-
-
-def _raise_if_unmapped(
-    source_hierarchy: Hierarchy,
-    target_hierarchy: Hierarchy,
-    source_to_target: dict[str, str],
-) -> None:
-    missing_sources = unmapped_sources(source_hierarchy, source_to_target)
-    missing_targets = unmapped_targets(target_hierarchy, source_to_target)
-    if missing_sources or missing_targets:
-        raise ValueError(
-            "Retargeting mapping is incomplete. "
-            f"Unmapped source joints: {', '.join(missing_sources) or 'none'}. "
-            f"Unmapped target joints: {', '.join(missing_targets) or 'none'}."
-        )
