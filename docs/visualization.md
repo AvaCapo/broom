@@ -1,10 +1,10 @@
-# Rendering BVH motion
+# Visualization BVH motion
 
-`broom.bvh.render` provides two optional interactive viewers. Both accept one or more `BVHDocument` instances and render their world-space joint positions. They can also accept raw NumPy arrays with shape `(frames, joints, 3)` when `parents` or `edges` are provided.
+`broom.visualization` provides two optional interactive viewers. Both accept one or more `Motion` instances and render their world-space joint positions. They can also accept raw NumPy arrays with shape `(frames, joints, 3)` when `parents` or `edges` are provided.
 
 ## Compatibility and installation
 
-The viewers are optional and are not declared in `pyproject.toml` yet. The current implementation was manually tested on macOS with:
+The viewers are optional and are not declared in `pyproject.toml` yet. The earlier viewer implementation was manually tested on macOS with the versions below. These are recorded compatibility results, not a new cross-platform test:
 
 | Viewer | Tested version |
 | --- | --- |
@@ -27,10 +27,13 @@ Use `ViserSkeletonViewer` for a browser-based scene. It starts a local HTTP serv
 ## `ViserSkeletonViewer`
 
 ```python
-from broom.bvh.render import ViserSkeletonViewer
+from broom.io import load_bvh
+from broom.visualization import ViserSkeletonViewer
 
+walk_motion = load_bvh("walk.bvh")
+run_motion = load_bvh("run.bvh")
 viewer = ViserSkeletonViewer(
-    [walk_document, run_document],
+    [walk_motion, run_motion],
     labels=["walk", "run"],
     offsets=[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
     port=8081,
@@ -42,7 +45,7 @@ After construction, open `http://127.0.0.1:8081` in a browser. In a notebook, `r
 
 Important parameters:
 
-- `clips`: one `BVHDocument`, one world-position array, or a sequence of them;
+- `clips`: one `Motion`, one world-position array, or a sequence of them;
 - `labels`: a label per clip;
 - `offsets`: one `(x, y, z)` translation per clip, useful for side-by-side comparison;
 - `edges`, `parents`, `names`, `fps`: hierarchy metadata for raw arrays;
@@ -55,10 +58,13 @@ Call `viewer.set_frame(index)` to select a frame and `viewer.close()` when the s
 ## `MeshcatSkeletonViewer`
 
 ```python
-from broom.bvh.render import MeshcatSkeletonViewer
+from broom.io import load_bvh
+from broom.visualization import MeshcatSkeletonViewer
 
+walk_motion = load_bvh("walk.bvh")
+run_motion = load_bvh("run.bvh")
 viewer = MeshcatSkeletonViewer(
-    [walk_document, run_document],
+    [walk_motion, run_motion],
     labels=["walk", "run"],
     offsets=[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
     display_mode="jupyter",
@@ -75,6 +81,9 @@ Call `viewer.set_frame(index)` to update the scene and `viewer.close()` to remov
 Pass `spheres` as one dictionary or a sequence of dictionaries. A sphere is either static through `position` or animated through `positions`.
 
 ```python
+from broom.kinematics import compute_global_positions
+
+marker_positions = compute_global_positions(walk_motion)[:, walk_motion.hierarchy.root]
 spheres = [
     {
         "label": "animated_marker",
@@ -90,4 +99,31 @@ spheres = [
 ]
 ```
 
+Pass the dictionaries with `ViserSkeletonViewer(walk_motion, spheres=spheres)` or `MeshcatSkeletonViewer(walk_motion, spheres=spheres)`.
+
 For Viser, `color` can also be an `(R, G, B)` tuple. Offsets affect skeletons only; debug-sphere coordinates are interpreted in world space.
+
+
+## Raw positions, frame rates, and display offsets
+
+```python
+import numpy as np
+from broom.kinematics import compute_global_positions
+
+positions = compute_global_positions(walk_motion)  # (F, J, 3)
+parents = np.array([joint.parent for joint in walk_motion.hierarchy.joints])
+viewer = ViserSkeletonViewer(
+    positions,
+    parents=parents,
+    names=walk_motion.hierarchy.joint_names,
+    fps=30,
+    port=8081,
+    reuse_port=True,
+)
+```
+
+F is the frame count; J is the joint count. Raw positions need `parents` or an edge list and a suitable playback FPS. A `Motion` supplies hierarchy and timing; its frame rate is currently rounded to an integer for playback. An explicit `fps` overrides it. Multiple clips share a frame cursor, so resample them to a common FPS when comparing their timing.
+
+Viewer offsets only move the rendered skeletons. They do not modify a `Motion` or affect BVH export. The MeshCat floor (`plane_axis`, `plane_offset`, `plane_size`) is also display geometry, not a collision constraint.
+
+[Visualization API](api/visualization.md)

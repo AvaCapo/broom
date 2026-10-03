@@ -1,205 +1,212 @@
-# Space-Time Retargeting: Quick Start
+# Space-time retargeting
 
-`retarget_motion_spacetime` adapts a BVH motion to a target skeleton with the same joint hierarchy, joint order, and channel layout. The skeletons may have different offsets or segment lengths.
+Space-time retargeting transfers motion to a skeleton with different proportions, then optimizes smooth corrections over time to satisfy explicit constraints. Typical constraints preserve foot contacts while allowing the root and joint rotations to adjust. All constraints are **soft penalties**, not exact guarantees.
 
-The solver starts from the source motion on the target skeleton, scales root translation from the relative rest-pose height, then optimizes smooth root and rotation corrections to satisfy supplied constraints.
-
-## Minimal retarget
-
-Load a source animation and a compatible target skeleton. The target may be a BVH with any motion because its hierarchy and offsets are what matter.
+## Load source motion and target skeleton
 
 ```python
-from pathlib import Path
-
 import numpy as np
+from broom.io import load_bvh, write_bvh
+from broom.kinematics import compute_global_positions
+from broom.retargeting import retarget_motion_spacetime
 
-from broom.bvh.io import load_bvh_document, write_bvh_with_motion_values
-from broom.bvh.kinematics import compute_global_positions
-from broom.bvh.retargeting import align_root_to_floor, retarget_motion_spacetime
-
-source = load_bvh_document(Path("source_walk.bvh"))
-target = load_bvh_document(Path("target_skeleton.bvh"))
-
-# Put the source in a known floor coordinate system before its positions are used as targets.
-# Set use_rest_pose=True when rest pose should also affect the floor estimate.
-source = align_root_to_floor(source, use_rest_pose=False)
+source = load_bvh("walk.bvh")
+target_hierarchy = load_bvh("target.bvh").hierarchy
 source_positions = compute_global_positions(source)
 ```
 
-Define contact intervals yourself. In this example `LeftToeBase` is planted on frames 12 through 20. Replace the joint name and interval with the contact data for the clip.
+Only the hierarchy of `target.bvh` is used. The source and target must have matching joint counts, parent indices and channel layouts; their offsets can differ. The source needs at least two frames. For different topologies, see [Refine a prepared motion](#refine-a-prepared-motion) below.
+
+Use consistent units and world coordinates. The following example assumes meters, Y up, and a ground surface at Y=0. BVH itself does not specify units; see [Coordinates and timing](concepts/coordinates.md).
+
+## Define foot-contact constraints
+
+Contact intervals should come from the **original source animation**: annotate them or detect them before retargeting. Here frames 12 through 20 are assumed to be a known left-foot contact. Replace the names and interval with your data.
 
 ```python
-joint_name = "LeftToeBase"
-joint_index = source.joint_index[joint_name]
+source_foot = source.hierarchy.joint_index("LeftToeBase")
+target_foot_name = "LeftToeBase"
 contact_frames = np.arange(12, 21)
+assert contact_frames[-1] < source.frame_count
+all_frames = np.arange(source.frame_count)
+floor_y = 0.0
 
 constraints = [
-    # Keep the contact at the source height without restoring its source XZ footprint.
-    # The target may choose a stride length that fits its skeleton.
-    {
-        "type": "position",
-        "name": "left_contact_height",
-        "joint": joint_name,
-        "frames": contact_frames,
-        "axes": "Y",
-        "positions": source_positions[contact_frames, joint_index, 1:2],
-        "weight": 10.0,
-    },
-    # Keep the planted foot from sliding horizontally during this interval.
-    {
-        "type": "stationary",
-        "name": "left_contact_xz",
-        "joint": joint_name,
-        "frames": contact_frames,
-        "axes": "XZ",
-        "weight": 10.0,
-    },
-    # Prevent this contact point from passing below the Y=0 floor.
-    {
-        "type": "floor",
-        "name": "left_contact_floor",
-        "joint": joint_name,
-        "frames": contact_frames,
-        "normal": [0.0, 1.0, 0.0],
-        "offset": 0.0,
-        "weight": 100.0,
-    },
+    dict(
+        type="position", name="left_contact_height",
+        joint=target_foot_name, frames=contact_frames, axes="Y",
+        positions=source_positions[contact_frames, source_foot, 1:2],
+    ),
+    dict(
+        type="stationary", name="left_contact_stationary",
+        joint=target_foot_name, frames=contact_frames, axes="XZ",
+    ),
+    dict(
+        type="floor", name="left_no_penetration",
+        joint=target_foot_name, frames=all_frames,
+        normal=[0, 1, 0], offset=floor_y,
+    ),
 ]
+```
 
+These constraints serve different purposes:
+
+- **Contact height** preserves the source joint's vertical coordinates during contact. Use `positions=[floor_y]` instead if this joint should lie exactly on the floor. An ankle joint usually sits above the sole, so its intended height is not necessarily zero.
+- **Stationary contact** penalizes changes in X and Z between adjacent listed frames. It lets the optimizer choose where the foot is planted; it does not copy the source's absolute horizontal trajectory.
+- **Floor** penalizes penetration at all listed frames, including outside contact intervals. It does not force contact or prevent horizontal sliding.
+
+Add separate height/stationary constraints for every continuous contact interval and each foot. Do not combine separated intervals into one stationary constraint: that also links the last frame of one interval to the first of the next. Choose corresponding source/target contact points with comparable meaning.
+
+**Y and XZ are choices in this example, not restrictions.** Position and stationary constraints accept `X`, `Y`, `Z`, `XY`, `XZ`, `YZ`, or `XYZ`. For Z-up data, use Z for height, XY for stationary contact, and `[0, 0, 1]` as the floor normal. A floor constraint can represent any plane, including a slope. Coordinate-axis constraints do not automatically rotate into that plane's tangent frame.
+
+## Run and inspect the result
+
+```python
+# Rotations are optimized in radians. This optional weighting makes their
+# coefficient penalty comparable to a penalty on angles measured in degrees.
+parameter_weights = [
+    (180 / np.pi) ** 2 if channel.endswith("rotation") else 1.0
+    for joint in target_hierarchy.joints
+    for channel in joint.channels
+    if channel.endswith("rotation")
+    or (joint.parent == -1 and channel.endswith("position"))
+]
 result = retarget_motion_spacetime(
     source,
-    target,
+    target_hierarchy,
     constraints,
-    control_point_spacing=8,
-    max_nfev=100,
+    scale=None,
+    control_point_spacing=4,
+    parameter_weights=parameter_weights,
+    constraint_tolerance=0.005,
+    max_nfev=60,
 )
-
 print(result.success, result.message)
 for name, residual in result.constraint_residuals.items():
-    print(name, np.abs(residual).max())
-
-write_bvh_with_motion_values(
-    result.document,
-    Path("output_retargeted.bvh"),
-    result.motion_values,
-    precision=8,
-)
+    print(name, "maximum weighted residual:", np.max(np.abs(residual)))
+write_bvh(result.motion, "retargeted.bvh")
 ```
 
-Add equivalent constraints for every known contact interval. A `floor` constraint is one-sided: it prevents penetration but allows a point to hover. Use a `position` constraint on `"Y"` when the contact must have a known height.
+The function performs three stages:
 
-## Automatic floor and contact detection
+1. Copy source samples onto the target hierarchy and scale root translations. `scale=None` uses the target/source rest-height ratio; `scale=1.0` disables scaling. It scales root translation values, not only frame-to-frame travel.
+2. Fit root translation to position constraints, interpolate the required shifts over time, and smooth them. This preparation is always performed; stationary and floor constraints alone do not provide positional anchors for this step.
+3. Optimize spline corrections to root translation and joint rotations.
 
-`broom.bvh.analysis.foot_contacts` can estimate a floor from designated foot joints and propose contact intervals. It is a heuristic, so inspect the resulting intervals before using them as constraints.
+Non-root translations are copied unchanged: they are neither scaled nor optimized. Check them explicitly when changing skeleton proportions. The function does not infer contacts or apply an independent final floor shift.
+
+The returned SciPy `OptimizeResult` includes:
+
+| Field | Meaning |
+| --- | --- |
+| `motion` | Final target animation. |
+| `initial_motion_values` | Samples **after root fitting, before optimization**; not a separate FK-retarget baseline. |
+| `constraint_residuals` | Named weighted residual arrays. |
+| `control_points`, `parameter_names` | Fitted spline coefficients and their parameter identities. |
+| `scale`, `constraint_tolerance` | Resolved scale and spatial tolerance in target units. |
+| `success`, `message`, `nfev`, `cost` | Solver termination and optimization diagnostics. |
+
+Weighted residuals are not distances in meters. Measure actual errors with FK:
 
 ```python
-from broom.bvh.analysis.foot_contacts import contact_segments, detect_foot_contacts, estimate_floor_height
+positions = compute_global_positions(result.motion)
+foot = target_hierarchy.joint_index(target_foot_name)
+contact = positions[contact_frames, foot]
+height_error = contact[:, 1] - source_positions[contact_frames, source_foot, 1]
+sliding = np.linalg.norm(np.diff(contact[:, [0, 2]], axis=0), axis=1)
+penetration = np.maximum(floor_y - positions[:, foot, 1], 0)
+print("maximum height error:", np.max(np.abs(height_error)))
+print("maximum contact displacement per frame:", sliding.max())
+print("maximum floor penetration:", penetration.max())
+```
+
+Inspect both these errors and playback. `success=True` means a solver termination criterion was met, not that every contact is acceptable. A low evaluation limit can stop before convergence. A final manual floor shift can invalidate solved position constraints.
+
+## Detect contact intervals
+
+The contact detector uses source world positions, foot-joint groups, and height and displacement thresholds. This is an alternative to manual annotation above:
+
+```python
+from broom.foot_lock import detect_foot_contacts, contact_segments
+from broom.ops.skeleton_geometry import estimate_height
 
 foot_groups = {
-    "left": ["LeftToeBase", "LeftToe_End"],
-    "right": ["RightToeBase", "RightToe_End"],
+    "left": np.array([source.hierarchy.joint_index("LeftToeBase")]),
+    "right": np.array([source.hierarchy.joint_index("RightToeBase")]),
 }
-foot_indices = [source.joint_index[name] for names in foot_groups.values() for name in names]
-
-floor_y = estimate_floor_height(source_positions, foot_indices)
-contacts = detect_foot_contacts(
+contact_masks = detect_foot_contacts(
     source_positions,
     foot_groups,
-    joints=source.joints,
-    joint_names=source.joint_names,
-    min_contact_frames=2,
+    skeleton_height=estimate_height(source.hierarchy),
+    height_threshold=None,
+    velocity_threshold=None,
+    velocity_dimensions=(0, 2),
+    height_dimension=1,
 )
-
-constraints = []
-for side, mask in contacts.items():
-    joint_name = foot_groups[side][0]
-    joint_index = source.joint_index[joint_name]
+for side, mask in contact_masks.items():
     for start, end in contact_segments(mask):
-        frames = np.arange(start, end + 1)
-        constraints.extend([
-            {
-                "type": "position",
-                "name": f"{side}_height_{start}_{end}",
-                "joint": joint_name,
-                "frames": frames,
-                "axes": "Y",
-                "positions": source_positions[frames, joint_index, 1:2],
-                "weight": 10.0,
-            },
-            {
-                "type": "stationary",
-                "name": f"{side}_xz_{start}_{end}",
-                "joint": joint_name,
-                "frames": frames,
-                "axes": "XZ",
-                "weight": 10.0,
-            },
-            {
-                "type": "floor",
-                "name": f"{side}_floor_{start}_{end}",
-                "joint": joint_name,
-                "frames": frames,
-                "normal": [0.0, 1.0, 0.0],
-                "offset": floor_y,
-                "weight": 100.0,
-            },
-        ])
+        frames = np.arange(start, end + 1)  # Both endpoints are included.
+        print(side, frames)
 ```
 
-If the source was aligned with `align_root_to_floor(..., floor_height=0.0)`, `floor_y` should be near zero. Estimating it explicitly still makes the constraint coordinate system clear.
+Use each interval to construct constraints as above, with the corresponding target joint. Groups can contain multiple points on one foot. The detector uses their minimum height and the displacement of their mean horizontal position.
 
-## Constraint inputs
+Despite the parameter name, `velocity_threshold` is a **displacement per frame**, not a speed per second. Defaults depend on skeleton height and include absolute length thresholds suited to meters. The detector estimates a floor from the clip; it does not read the plane passed to the solver. Review its output for airborne clips, unusual frame rates, and other units. For Z up, set `height_dimension=2` and `velocity_dimensions=(0, 1)`.
 
-Every constraint has a unique `name` and frame indices. Most constraints use one target `joint`; `relational` uses target endpoints `joint_a` and `joint_b`. `weight` is optional for `position`, `stationary`, and `floor`: when omitted, the solver derives it from `constraint_tolerance`. An explicit non-negative `weight` overrides that default. Weights are soft penalties, so inspect residuals rather than assuming every constraint was met exactly.
+## Constraint reference
 
-| Type | Required fields | Meaning |
-| --- | --- | --- |
-| `position` | `positions`, optional `axes` | Match selected world coordinates to a target. `axes` defaults to `"XYZ"`; allowed values are `"X"`, `"Y"`, `"Z"`, `"XY"`, `"XZ"`, `"YZ"`, `"XYZ"`. |
-| `stationary` | optional `axes` | Keep selected world coordinates unchanged between consecutive listed frames. |
-| `floor` | optional `normal`, `offset` | Penalize positions below a plane. Defaults to the Y=0 plane. |
-| `joint_limit` | `minimum`, `maximum` | Penalize BVH Euler rotation channels outside declared bounds. |
-| `relational` | `joint_a`, `joint_b`, `source_normalized_distance`, `target_path_length`; optional `activation` | Match the endpoint distance normalized by the target rest-pose kinematic path length to the source-normalized distance. `activation` defaults to `1.0`. |
+Every constraint contains `type` and `frames`. Joint names refer to the **target** hierarchy; frame indices refer to the motion being optimized. Optional `name` identifies residuals and must be unique; optional nonnegative `weight` controls its penalty. Frames must be valid, nonempty integer indices.
 
-For `position`, `positions` can be one constant point or one point per frame. It may contain full XYZ coordinates or only the selected axes. A Y-only per-frame target must have shape `(frame_count, 1)`, as in the examples.
+### Position
 
-Use a full `"XYZ"` position constraint when a joint must remain at a specific world-space location, such as a stair tread or a marked ground point. For free walking, Y position plus XZ stationary contact is usually the better starting constraint: it preserves ground contact without requiring target steps to land in the source footprints.
+Fields: `joint`, `positions`, optional `axes` (default `XYZ`). Match selected world coordinates at each listed frame. With N frames and K selected axes, `positions` accepts `(K,)` for a constant target or `(N, K)` for per-frame targets. Full XYZ vectors `(3,)` or `(N, 3)` are also accepted; selected axes are extracted. For one constant height, use `[height]`, not a scalar.
 
-By default, `constraint_tolerance=0.005` represents a 5 mm positional error. The solver scales it by the resolved root scale and uses `1 / tolerance_target**2` as the spatial constraint weight. This assumes source units represent meters before the scale is applied. For `stationary`, the tolerance applies to each adjacent selected-frame displacement, not accumulated drift across the interval. `joint_limit` remains degree-valued and defaults to weight `1.0`.
+A full XYZ position target pins a point in world space. Use it when that absolute location is intentional; it can conflict with proportion-dependent root travel.
 
-## Quick single-file experiment
+### Stationary
 
-When no separate target skeleton is available, make a copy of the source skeleton with changed offsets. This is useful only as a local experiment; a real target should come from its own BVH hierarchy.
+Fields: `joint`, optional `axes` (default `XYZ`). Penalize coordinate differences between consecutive listed frames. Requires at least two strictly increasing frames. It does not specify an absolute location and does not divide differences by elapsed time. Small per-step errors can accumulate into drift.
+
+### Floor
+
+Fields: `joint`, optional `normal` (default `[0, 1, 0]`) and `offset` (default 0). The allowed side of the plane is `dot(position, unit_normal) >= offset`. Supply a unit normal and a signed plane offset in the motion's length units. The solver normalizes the normal but does not rescale the offset.
+
+### Joint limits
+
+Fields: `joint`, `minimum`, `maximum`. Bounds are **Euler angles in degrees**, in the joint's declared rotation-channel order, with one value per rotation channel. They are explicit constraints; BVH loading does not install limits automatically. The solver supports one-axis hinges and three-axis rotation groups, not two-axis groups. Euler limits retain Euler singularity/branch limitations even though rotational corrections are optimized in radians.
+
+### Relational distance
+
+Fields: `joint_a`, `joint_b`, `source_normalized_distance`, `target_path_length`, optional `activation`. The residual compares `distance(target_a, target_b) / target_path_length` with the supplied normalized source distance. `target_path_length` must be positive. Distance targets and nonnegative activation can be scalar or have one value per listed frame; activation defaults to 1 and multiplies the penalty weight.
+
+For example, a normalized target of 0.1 and target path length of 1.2 meters request a separation of 0.12 meters. This constrains distance, not orientation or an exact shared contact point. Source-derived relations must be constructed explicitly; they are not inferred from an already-retargeted result. See the [constraint builders and solver API](api/spacetime.md).
+
+## Tuning
+
+- `control_point_spacing` is in frames. Smaller spacing permits more local corrections; larger spacing couples more frames. Splines smooth the **correction**, not necessarily jitter already present in the input motion.
+- `control_weight` and `parameter_weights` penalize spline coefficients. Root translations use input length units; rotations use radians. The example's degree-to-radian weighting is a choice, not a universal optimum. Weights follow optimized channels in hierarchy/channel order: root translations and rotations.
+- For position/stationary/floor constraints without explicit weights, retargeting uses `1 / (constraint_tolerance * scale)**2`. The default tolerance is 0.005; in meters, with scale 1, that is 5 mm. It sets a penalty scale, not a hard error bound. Explicit per-constraint weights override this default.
+- `smoothing_sigma` is the root-preparation Gaussian width in frames.
+- `max_nfev` limits evaluations; `ftol`, `xtol`, and `gtol` control termination. Increase the budget only after checking that the requested constraints are compatible and reachable.
+
+## Refine a prepared motion
+
+`solve_motion_spacetime` optimizes an animation already on the target hierarchy. For example, it can refine `result.motion` using additional target constraints:
 
 ```python
-from dataclasses import replace
+from broom.retargeting import solve_motion_spacetime
 
-offset_scale = {
-    "LeftUpLeg": 0.8,
-    "LeftLeg": 0.8,
-    "RightUpLeg": 0.8,
-    "RightLeg": 0.8,
-}
-
-target = replace(
-    source,
-    joints=tuple(
-        replace(joint, offset=joint.offset * offset_scale.get(joint.name, 1.0))
-        for joint in source.joints
-    ),
+prepared_motion = result.motion
+refined = solve_motion_spacetime(
+    prepared_motion,
+    constraints,
+    parameter_weights=parameter_weights,
+    constraint_tolerance=result.constraint_tolerance,
+    control_point_spacing=4,
+    max_nfev=60,
 )
 ```
 
-Then use `target` in the minimal-retarget call above. Keep both legs symmetric when testing scale effects, otherwise asymmetry becomes part of the experiment.
+This is an alternative entry point, not a required second solve after retargeting. It shares mandatory root fitting and the optimizer but does not rescale again. Its default spatial weight is `1 / constraint_tolerance**2`; passing the resolved retarget tolerance above preserves the previous default penalty scale.
 
-## Main parameters
-
-- `scale`: optional explicit root-translation scale. Omit it to use the target and source rest-pose height ratio.
-- `control_point_spacing`: frames between cubic B-spline breakpoints. Smaller values allow more local corrections (higher frequency); larger values enforce broader changes.
-- `control_weight`: penalty on correction control points. Higher values keep the result closer to the initial transferred motion.
-- `parameter_weights`: one value for every optimized root-translation or rotation parameter. Rotation corrections are measured in radians. To compare with an older degree-based angular penalty, a starting conversion is `(180 / np.pi) ** 2` for rotation parameters.
-- `constraint_tolerance`: source-space spatial tolerance used only when `position`, `stationary`, or `floor` omit `weight`. The default `0.005` is 5 mm; it is multiplied by the resolved root scale before deriving the target-space weight.
-- `max_nfev`: solver evaluation budget. Check `success`, `message`, and residuals after every run.
-
-## Limitations
- 
-The solver is currently for equal-topology skeletons only. It does not infer joint mapping, foot contacts, scene geometry, or physically correct gait.
+For different topologies, [mapped transfer and chain refinement](guides/retargeting.md) can prepare the target motion. Build constraints for **target joint indices/names and target dimensions**, while taking contact events and desired relations from the original source. The prepared motion supplies the reference for corrections, not just an arbitrary starting point. This workflow depends on the quality of that preparation and is not a guarantee of equivalent cross-topology retargeting.
