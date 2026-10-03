@@ -1,0 +1,8 @@
+# From the repository root: python -m pip install -r requirements-dev.txt
+# Preview: python -m mkdocs serve
+# Build: python -m mkdocs build --strict
+-e .
+pytest
+mkdocs>=1.6,<2
+mkdocs-material>=9,<10
+mkdocstrings[python]>=1,<2
