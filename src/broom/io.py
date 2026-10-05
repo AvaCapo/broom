@@ -11,12 +11,15 @@ import numpy as np
 
 from broom import Hierarchy, Joint, Motion
 
+
 def _parse_finite_float(token: str, *, context: str) -> float:
-    """Parse one finite BVH number."""
+    """Parse one finite BVH number, replacing NaN with zero."""
     try:
         value = float(token)
     except ValueError as error:
         raise ValueError(f"{context} must be a finite number, got {token!r}.") from error
+    if np.isnan(value):
+        return 0.0
     if not np.isfinite(value):
         raise ValueError(f"{context} must be finite, got {token!r}.")
     return value
@@ -286,7 +289,7 @@ def load_bvh(
     root_name: str | None = None,
     motion_name: str = "MOTION",
 ) -> Motion:
-    """Read a BVH file into a Motion."""
+    """Read a BVH file into a Motion, replacing NaN numeric values with zero."""
     return _read_motion_from_lines(
         Path(path).read_text(encoding="utf-8-sig").splitlines(keepends=True),
         root_name=root_name,
@@ -297,7 +300,7 @@ def load_bvh(
 def load_bvh_from_text(
     text: str, root_name: str | None = None, motion_name: str = "MOTION"
 ) -> Motion:
-    """Read BVH text into a Motion."""
+    """Read BVH text into a Motion, replacing NaN numeric values with zero."""
     if not isinstance(text, str):
         raise TypeError(f"text must be str, got {type(text).__name__}")
     return _read_motion_from_lines(
@@ -311,7 +314,7 @@ def load_bvh_from_bytes(
     motion_name: str = "MOTION",
     encoding: str = "utf-8-sig",
 ) -> Motion:
-    """Read BVH bytes into a Motion."""
+    """Read BVH bytes into a Motion, replacing NaN numeric values with zero."""
     if not isinstance(data, (bytes, bytearray, memoryview)):
         raise TypeError("data must be bytes, bytearray, or memoryview.")
     try:
