@@ -1,3 +1,1 @@
-"""BVH filtering helpers."""
-
-__all__ = ()
+"""Motion filtering helpers."""
