@@ -29,4 +29,4 @@ where = ["src"]
 include = ["broom*"]
 
 [tool.setuptools.package-data]
-"broom.bvh" = ["data/*.json"]
+"broom" = ["data/*.json"]
