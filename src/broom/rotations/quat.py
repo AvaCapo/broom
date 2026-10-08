@@ -90,13 +90,14 @@ def from_matrix(rotmats: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-        rotmats: np.ndarray[..., 3, 3]. Matrix order: [[r0.x, r0.y, r0.z],
-                                                     [r1.x, r1.y, r1.z],
-                                                     [r2.x, r2.y, r2.z]] where ri is row i.
+    rotmats : np.ndarray[..., 3, 3]
+        Matrix order: [[r0.x, r0.y, r0.z],
+                       [r1.x, r1.y, r1.z],
+                       [r2.x, r2.y, r2.z]] where ri is row i.
 
     Returns
     -------
-        quat np.array[..., [w,x,y,z]]
+    quat : np.array[..., [w,x,y,z]]
     """
     # Separate components
     r0c0 = rotmats[..., 0, 0]
@@ -287,12 +288,14 @@ def to_matrix(quaternions: np.ndarray) -> np.ndarray:
     Convert rotations given as quaternions to rotation matrices.
     Parameters
     ----------
-        quaternions: np.array[..., [w,x,y,z]]
+    quaternions : np.array[..., [w,x,y,z]]
+
     Returns
     -------
-        rotmats: np.array[..., 3, 3]. Matrix order: [[r0.x, r0.y, r0.z],
-                                                     [r1.x, r1.y, r1.z],
-                                                     [r2.x, r2.y, r2.z]] where ri is row i.
+    rotmats : np.array[..., 3, 3]
+        Matrix order: [[r0.x, r0.y, r0.z],
+                       [r1.x, r1.y, r1.z],
+                       [r2.x, r2.y, r2.z]] where ri is row i.
     """
     qw = quaternions[..., 0]
     qx = quaternions[..., 1]
@@ -481,8 +484,8 @@ def slerp(q0: np.ndarray, q1: np.ndarray, t: float | np.ndarray, shortest: bool 
     q1 : np.array[..., [w,x,y,z]]
     t : float or np.array[..., [t]]
         Interpolation parameter between 0 and 1. At t=0, returns q0 and at t=1, returns q1.
-    shorthest : bool
-        Ensure the shorthest path between quaternions.
+    shortest : bool
+        Ensure the shortest path between quaternions.
 
     Returns
     -------

@@ -34,15 +34,17 @@ def from_matrix(rotmats: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-        rotmats : np.array[..., 3, 3]. Matrix order: [[r0.x, r0.y, r0.z],
-                                                      [r1.x, r1.y, r1.z],
-                                                      [r2.x, r2.y, r2.z]] where ri is row i.
+    rotmats : np.array[..., 3, 3]
+        Matrix order: [[r0.x, r0.y, r0.z],
+                       [r1.x, r1.y, r1.z],
+                       [r2.x, r2.y, r2.z]] where ri is row i.
 
     Returns
     -------
-        ortho6D: np.array[..., 3, 2]. Matrix order: [[r0.x, r0.y],
-                                                     [r1.x, r1.y],
-                                                     [r2.x, r2.y]] where ri is row i.
+    ortho6D : np.array[..., 3, 2]
+        Matrix order: [[r0.x, r0.y],
+                       [r1.x, r1.y],
+                       [r2.x, r2.y]] where ri is row i.
     """
     return rotmats[..., :2]
 
@@ -70,15 +72,17 @@ def to_matrix(ortho6D: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-        ortho6D: np.array[..., 3, 2]. Matrix order: [[r0.x, r0.y],
-                                                     [r1.x, r1.y],
-                                                     [r2.x, r2.y]] where ri is row i.
+    ortho6D : np.array[..., 3, 2]
+        Matrix order: [[r0.x, r0.y],
+                       [r1.x, r1.y],
+                       [r2.x, r2.y]] where ri is row i.
 
     Returns
     -------
-        rotmats : np.array[..., 3, 3]. Matrix order: [[r0.x, r0.y, r0.z],
-                                                      [r1.x, r1.y, r1.z],
-                                                      [r2.x, r2.y, r2.z]] where ri is row i.
+    rotmats : np.array[..., 3, 3]
+        Matrix order: [[r0.x, r0.y, r0.z],
+                       [r1.x, r1.y, r1.z],
+                       [r2.x, r2.y, r2.z]] where ri is row i.
     """
     c1 = ortho6D[..., 0] / np.linalg.norm(ortho6D[..., 0], axis=-1, keepdims=True)
     c2 = ortho6D[..., 1] - np.sum(c1 * ortho6D[..., 1], axis=-1)[..., np.newaxis] * c1
