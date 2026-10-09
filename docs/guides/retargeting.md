@@ -23,7 +23,9 @@ result = retarget_mapped_motion(source, target, mapping, scale=scale)
 
 The mapper is a heuristic suggestion, not a semantic guarantee. Unmatched joints are reported in `MappingResult`. Explicit transfer does not guess more pairs. Mappings are injective: multiple source joints cannot map to one target joint.
 
-The low-level transfer scales mapped translations and rebases root translation to the first source frame. `rotation_correction="rest_pose"` is the default; `"none"` disables this correction. Optional `floor_height` requests floor alignment. Unmapped channel values start at zero; their global transforms still depend on mapped ancestors.
+The low-level transfer scales mapped translations and rebases root translation to the first source frame. `rotation_correction="rest_pose"` is the default. `"local_orientation"` changes rotation deltas between global rest-orientation bases computed by FK from the static `Joint.local_orientation` values; `"none"` disables correction. Optional `floor_height` requests floor alignment. Unmapped channel values start at zero; their global transforms still depend on mapped ancestors.
+
+In `local_orientation` mode, non-root translations are converted between the global rest bases of their parents, then scaled. Missing source position channels contribute zero. A missing target axis raises an error if its transformed displacement exceeds `1e-8` in target length units; root/non-root pairs with source position channels are also rejected and require an explicit root-motion policy. Root-to-root rebasing remains unchanged. This conversion preserves rest-space displacement directions; it does not compensate for different animated parent motion in a partial mapping. The other correction modes retain their existing translation behavior.
 
 `retarget_motion` is the convenience entry point that also attempts mapping. It returns `RetargetResult` with `.motion`, `.joint_map`, unmatched names and `.scale`. Use explicit transfer when a user has already approved the mapping.
 

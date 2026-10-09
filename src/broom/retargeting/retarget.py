@@ -35,13 +35,66 @@ def retarget_mapped_motion(
     floor_use_rest_pose: bool = False,
     floor_first_frame_only: bool = True,
 ) -> Motion:
-    """Transfer a Motion through an explicit source-to-target joint mapping.
+    """Transfer animation using an explicit source-to-target joint mapping.
 
-    Position and rotation channels are transferred only for mapped joints. All
-    transferred position values use ``scale``; root translation is relative to
-    the first source frame. When ``floor_height`` is not None, the result is
-    aligned to that coordinate along ``floor_up_axis``. The returned Motion
-    uses ``target_hierarchy`` and the source frame time.
+    Parameters
+    ----------
+    source_motion : Motion
+        Source animation. Source and target must use a common coordinate space.
+    target_hierarchy : Hierarchy
+        Target skeleton, including offsets, rest orientations and channel layout.
+        Its geometry is retained; offsets are not scaled by this function.
+    joint_map : Mapping[str, str]
+        Source joint names mapped to target names. The mapping may be partial,
+        but names must exist and target names must be unique. No additional
+        correspondences are inferred.
+    scale : float, default=1.0
+        Finite positive multiplier for transferred translations. Root-to-root
+        translations are first rebased to their initial source values.
+    rotation_correction : {"rest_pose", "local_orientation", "none"}, default="rest_pose"
+        ``rest_pose`` estimates joint bases from rest-position directions.
+        ``local_orientation`` uses global rest orientations computed by FK and
+        also converts non-root translations between parent rest bases.
+        ``none`` converts Euler order without rest-basis correction.
+        Rotations are transferred only when both joints have three rotation
+        channels. The other groups are left at zero.
+    floor_height : float or None, default=None
+        If supplied, shift the whole output clip so its estimated floor reaches
+        this coordinate along ``floor_up_axis``, in target length units.
+        This is constant alignment, not foot-contact optimization.
+    floor_up_axis : {"X", "Y", "Z"}, default="Y"
+        Axis used for optional floor estimation and alignment.
+    floor_use_rest_pose : bool, default=False
+        Include a zero-channel-rotation pose with first-frame translations in
+        the floor estimate. Static joint orientations remain applied.
+    floor_first_frame_only : bool, default=True
+        Estimate the animated floor from the first frame instead of all frames.
+        The resulting constant shift still applies to the entire clip.
+
+    Returns
+    -------
+    Motion
+        New motion with the target hierarchy and source frame count/timing.
+        Unmapped samples start at zero. Neither input is modified.
+
+    Raises
+    ------
+    ValueError
+        If the mapping, scale or correction mode is invalid, floor alignment
+        cannot be performed, or a translation cannot be represented in
+        ``local_orientation`` mode.
+
+    Notes
+    -----
+    Rest-basis correction transfers animation deltas, not the source rest pose:
+    zero rotations remain zero. It does not compensate for omitted animated
+    ancestors or solve different chain topologies.
+
+    In ``local_orientation`` mode, missing source translation axes mean zero.
+    A missing non-root target axis is rejected if its transformed displacement
+    exceeds 1e-8 in target length units. Root/non-root translation pairs are
+    rejected when the source has position channels. Root-to-root transfer and
+    the other modes copy only matching position channels.
     """
 
     validate_joint_mapping(
@@ -55,10 +108,14 @@ def retarget_mapped_motion(
         raise ValueError("scale must be a finite positive number.")
 
     if not isinstance(rotation_correction, str):
-        raise ValueError("rotation_correction must be 'rest_pose' or 'none'.")
+        raise ValueError(
+            "rotation_correction must be 'rest_pose', 'local_orientation', or 'none'."
+        )
     rotation_correction = rotation_correction.lower()
-    if rotation_correction not in {"rest_pose", "none"}:
-        raise ValueError("rotation_correction must be 'rest_pose' or 'none'.")
+    if rotation_correction not in {"rest_pose", "local_orientation", "none"}:
+        raise ValueError(
+            "rotation_correction must be 'rest_pose', 'local_orientation', or 'none'."
+        )
 
     target_values = np.zeros(
         (source_motion.frame_count, target_hierarchy.total_channels),
@@ -78,6 +135,7 @@ def retarget_mapped_motion(
         source_to_target=source_to_target,
         target_values=target_values,
         scale=scale,
+        rotation_correction=rotation_correction,
     )
     output_motion = Motion(
         target_hierarchy, target_values, source_motion.frame_time
@@ -109,13 +167,66 @@ def retarget_motion(
     floor_use_rest_pose: bool = False,
     floor_first_frame_only: bool = True,
 ) -> RetargetResult:
-    """Automatically map and retarget source motion onto a target hierarchy.
+    """Suggest joint correspondences and retarget a motion onto a target skeleton.
 
-    ``known_joint_map`` fixes explicit source-to-target pairs before automatic
-    mapping. Choose exactly one scaling policy: set ``auto_scale=True`` without
-    ``scale`` to estimate skeleton scale, or set ``auto_scale=False`` together
-    with an explicit positive ``scale``. When ``floor_align`` is enabled,
-    ``floor_height`` selects the output floor coordinate.
+    Parameters
+    ----------
+    source_motion : Motion
+        Source animation in the same coordinate space as the target.
+    target_hierarchy : Hierarchy
+        Target skeleton and channel layout; its rest geometry is preserved.
+    known_joint_map : Mapping[str, str] or None, default=None
+        Explicit source-to-target pairs retained while the mapper attempts to
+        match remaining joints. Use ``retarget_mapped_motion`` instead when
+        only an approved mapping should be used.
+    min_score : float, default=0.65
+        Minimum score for accepting an automatically suggested joint pair.
+    scale : float or None, default=None
+        Explicit positive translation scale. Requires ``auto_scale=False``.
+    auto_scale : bool, default=True
+        Estimate the target/source rest-height ratio. Requires ``scale=None``.
+        With this option disabled, an explicit scale is required.
+    rotation_correction : {"rest_pose", "local_orientation", "none"}, default="rest_pose"
+        ``rest_pose`` corrects rotations using bases estimated from joint
+        positions. ``local_orientation`` uses FK-derived global rest bases
+        and converts non-root translations between parent rest bases.
+        ``none`` transfers rotations with Euler-order conversion only.
+        See ``retarget_mapped_motion`` for channel support and limitations.
+    floor_align : bool, default=True
+        Apply a constant vertical shift after transfer to align the estimated
+        floor. This does not lock feet or optimize contacts.
+    floor_height : float, default=0.0
+        Desired floor coordinate in target length units; ignored when
+        ``floor_align=False``.
+    strict : bool, default=False
+        Reject a mapping if any source or target joint remains unmatched.
+        This checks mapping completeness, not kinematic equivalence.
+    floor_up_axis : {"X", "Y", "Z"}, default="Y"
+        Axis for floor estimation and alignment.
+    floor_use_rest_pose : bool, default=False
+        Include a zero-channel-rotation pose with first-frame translations in
+        the floor estimate, retaining static joint orientations.
+    floor_first_frame_only : bool, default=True
+        Estimate the animated floor from the first frame rather than all frames.
+
+    Returns
+    -------
+    RetargetResult
+        New animation in ``motion``, the resolved ``joint_map``,
+        ``unmapped_source_joints``, ``unmapped_target_joints``, and ``scale``.
+        The animation retains source timing; neither input is modified.
+
+    Raises
+    ------
+    ValueError
+        If the scaling policy is inconsistent, strict mapping is incomplete,
+        or mapping/transfer/floor-alignment validation fails.
+
+    Notes
+    -----
+    Automatic matching is heuristic. The transfer has the same channel and
+    rest-basis limitations as ``retarget_mapped_motion``; it does not perform
+    chain refinement or space-time optimization.
     """
 
     if not isinstance(auto_scale, bool):
