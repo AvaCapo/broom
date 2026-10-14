@@ -5,7 +5,7 @@ from collections.abc import Mapping
 import numpy as np
 
 from broom import Hierarchy, Motion
-from broom.kinematics import compute_global_positions, compute_global_transforms_from_local
+from broom.kinematics import compute_global_positions, compute_global_transforms, compute_global_transforms_from_local
 
 
 # TODO: Review name-based joint selection; these substrings are not universal
@@ -18,9 +18,12 @@ def transfer_mapped_translations(
     target_hierarchy: Hierarchy,
     source_to_target: Mapping[str, str],
     target_values: np.ndarray,
-    scale: float,
     *,
-    rotation_correction: str = "none",
+    scale: float,
+    rotation_correction: str = "local_orientation",
+    source_root_height: float | None = None,
+    target_mapped_root_height: float | None = None,
+    up_axis: str = "Y",
 ) -> None:
     """Write mapped animation displacements into a target sample array in place.
 
@@ -37,14 +40,24 @@ def transfer_mapped_translations(
         Writable floating-point array of shape
         ``(source_motion.frame_count, target_hierarchy.total_channels)``.
         Only transferred position columns are written; other columns retain
-        their existing values. Do not alias the source sample array.
+        their existing values. Rotations must already be transferred: the
+        mapped root recipient uses animated target parent FK. Do not alias
+        the source sample array.
     scale : float
         Translation multiplier, validated as finite and positive by the caller.
-    rotation_correction : {"none", "rest_pose", "local_orientation"}, default="none"
-        ``none`` and ``rest_pose`` copy matching XYZ position channels.
-        ``local_orientation`` converts non-root displacement vectors between
-        global parent rest bases before scaling. This helper expects the
-        caller to validate the mode.
+    rotation_correction : {"local_orientation", "rest_pose", "none"}, default="local_orientation"
+        For non-root source joints, ``local_orientation`` converts vectors between global
+        parent rest bases before scaling. ``none`` and ``rest_pose`` copy
+        matching XYZ position channels. The caller must validate the mode.
+    source_root_height : float or None, default=None
+        Source root standing height above zero ground, in source units.
+        None uses its global rest coordinate along ``up_axis``.
+    target_mapped_root_height : float or None, default=None
+        Standing height of the source root's mapped target joint, in target
+        units. None uses that joint's global rest coordinate. This joint need
+        not be the target root. Heights must be finite; no floor is inferred.
+    up_axis : {"X", "Y", "Z"}, default="Y"
+        Vertical axis, case-insensitive. Other coordinates are only scaled.
 
     Returns
     -------
@@ -53,127 +66,124 @@ def transfer_mapped_translations(
 
     Raises
     ------
-    ValueError
-        In ``local_orientation`` mode, if a non-root target lacks an axis
-        whose transformed displacement exceeds 1e-8 in target length units,
-        or a root/non-root pair has source position channels.
     KeyError
         If a mapped joint name does not exist in its hierarchy.
 
     Notes
     -----
-    For non-root pairs in ``local_orientation`` mode, column-vector notation
-    gives ``d_target = scale * B_target_parent.T @ B_source_parent @ d_source``.
-    The bases are global rest rotations, not the joints' own orientations or
-    animated parent rotations. Missing source components are zero. A source
-    joint without position channels leaves the target unchanged. With source
-    position channels present, all available target position axes are written,
-    including transformed zeros. Offsets are never modified.
+    The mapped source root transfers its skeleton-space trajectory
+    ``p = scale * (source_offset + d_source)`` plus the vertical correction
+    ``target_height - scale * source_height``. No first sample is subtracted.
+    Default heights assume standing rest poses with ground at zero; explicit
+    heights support other baseline encodings without changing the inputs.
+    For the mapped target recipient,
+    ``d_target = R_parent(t).T @ (p - p_parent(t)) - target_offset``.
+    Its parent's actual animated transforms are used, with identity/zero for
+    a target root. No source-root mapping means no trajectory transfer.
 
-    Root-to-root transfer always subtracts the first source sample, scales,
-    and writes only matching axes. Outside ``local_orientation`` mode,
-    non-root values are scaled without rebasing and missing channels are skipped.
-    Writes to earlier pairs are not rolled back if a later pair raises.
+    Other source joints use
+    ``d_target = scale * B_target_parent.T @ B_source_parent @ d_source``
+    in ``local_orientation`` mode. These bases are global rest rotations,
+    with identity for a virtual root parent. Other modes copy matching axes.
+    This non-root transfer does not compensate for animated parent differences.
+
+    Missing source components are zero; a non-root source joint with no
+    position channels leaves its target unchanged. A mapped source root
+    without channels still contributes its static rest position. Missing
+    target components are discarded, so motion may be lost. Target offsets
+    are never modified. Source and target must already share coordinate axes.
     """
 
+    if not isinstance(up_axis, str) or up_axis.upper() not in {"X", "Y", "Z"}:
+        raise ValueError("up_axis must be one of 'X', 'Y', or 'Z'.")
+    up_axis_index = "XYZ".index(up_axis.upper())
+    for name, height in (("source_root_height", source_root_height),
+                         ("target_mapped_root_height", target_mapped_root_height)):
+        if height is not None and (not np.isscalar(height) or
+                                   isinstance(height, (str, bool, np.bool_)) or
+                                   not np.isreal(height) or not np.isfinite(height)):
+            raise ValueError(f"{name} must be a finite number or None.")
     source_hierarchy = source_motion.hierarchy
     scale = float(scale)
     if rotation_correction == "local_orientation":
         _, source_rest = compute_global_transforms_from_local(source_hierarchy)
         _, target_rest = compute_global_transforms_from_local(target_hierarchy)
+        # Parent index -1 selects the virtual skeleton-space parent's identity.
+        source_parent_bases = np.concatenate((source_rest[0], np.eye(3)[None]))
+        target_parent_bases = np.concatenate((target_rest[0], np.eye(3)[None]))
+
     for source_name, target_name in source_to_target.items():
+        if source_name == source_hierarchy.root_name:
+            continue  # Transfer the root trajectory after target parents are ready.
         source_index = source_hierarchy.joint_index(source_name)
         target_index = target_hierarchy.joint_index(target_name)
-        is_root_pair = (
-            source_index == source_hierarchy.root
-            and target_index == target_hierarchy.root
-        )
-        if rotation_correction == "local_orientation" and not is_root_pair:
-            source_columns = {
-                channel[0]: source_hierarchy.channel_index(source_name, channel)
-                for channel in source_hierarchy.joints[source_index].channels
-                if channel.endswith("position")
-            }
-            if not source_columns:
-                continue
-            source_parent = source_hierarchy.joints[source_index].parent
-            target_parent = target_hierarchy.joints[target_index].parent
-            if source_parent == -1 or target_parent == -1:
-                raise ValueError(
-                    f"Cannot transfer translations from {source_name!r} to "
-                    f"{target_name!r} between root and non-root joints in "
-                    "local_orientation mode; an explicit root-motion policy is required."
-                )
+        source_joint = source_hierarchy.joints[source_index]
+        target_joint = target_hierarchy.joints[target_index]
+        source_columns = {
+            channel[0]: source_hierarchy.channel_index(source_name, channel)
+            for channel in source_joint.channels if channel.endswith("position")
+        }
+        if not source_columns:
+            continue
+        target_columns = {
+            channel[0]: target_hierarchy.channel_index(target_name, channel)
+            for channel in target_joint.channels if channel.endswith("position")
+        }
+        # TODO: Compensate for unrepresentable displacement with IK or another
+        # retargeting algorithm; for now, missing target channels lose motion.
+        if rotation_correction == "local_orientation":
             translations = np.zeros((source_motion.frame_count, 3), dtype=np.float64)
             for axis, column in source_columns.items():
                 translations[:, "XYZ".index(axis)] = source_motion.values[:, column]
-            correction = target_rest[0, target_parent].T @ source_rest[0, source_parent]
+            correction = (
+                target_parent_bases[target_joint.parent].T
+                @ source_parent_bases[source_joint.parent]
+            )
             translations = scale * (translations @ correction.T)
-            target_columns = {
-                channel[0]: target_hierarchy.channel_index(target_name, channel)
-                for channel in target_hierarchy.joints[target_index].channels
-                if channel.endswith("position")
-            }
-            for dimension, axis in enumerate("XYZ"):
-                if axis not in target_columns and np.any(np.abs(translations[:, dimension]) > 1e-8):
-                    raise ValueError(
-                        f"Cannot transfer translations from {source_name!r} to "
-                        f"{target_name!r}: target lacks {axis}position required "
-                        "by the transformed displacement."
-                    )
             for axis, column in target_columns.items():
                 target_values[:, column] = translations[:, "XYZ".index(axis)]
-            continue
-        for axis in "XYZ":
-            try:
-                source_channel = source_hierarchy.channel_index(
-                    source_name, f"{axis}position"
-                )
-                target_channel = target_hierarchy.channel_index(
-                    target_name, f"{axis}position"
-                )
-            except KeyError:
-                continue
+        else:
+            for axis, column in target_columns.items():
+                if axis in source_columns:
+                    target_values[:, column] = source_motion.values[:, source_columns[axis]] * scale
 
-            source_values = source_motion.values[:, source_channel]
-            if is_root_pair:
-                source_values = source_values - source_values[0]
-            target_values[:, target_channel] = source_values * scale
-
-
-def transfer_root_translation(
-    source_motion: Motion,
-    target_hierarchy: Hierarchy,
-    target_motion: np.ndarray,
-    scale: float,
-) -> None:
-    """Copy source root translation into the output target motion."""
-
-    source_hierarchy = source_motion.hierarchy
-    source_root_name = source_hierarchy.root_name
-    target_root_name = target_hierarchy.root_name
-    if not source_hierarchy.position_channel_indices(source_root_name):
+    target_name = source_to_target.get(source_hierarchy.root_name)
+    if target_name is None:
         return
-
-    for axis in "XYZ":
-        try:
-            target_index = target_hierarchy.channel_index(
-                target_root_name, f"{axis}position"
-            )
-        except KeyError:
-            continue
-        try:
-            source_index = source_hierarchy.channel_index(
-                source_root_name, f"{axis}position"
-            )
-        except KeyError:
-            target_motion[:, target_index] = 0.0
-            continue
-
-        source_values = source_motion.values[:, source_index]
-        target_motion[:, target_index] = (
-            source_values - source_values[0]
-        ) * float(scale)
+    target_joint = target_hierarchy.joints[target_hierarchy.joint_index(target_name)]
+    target_columns = {
+        channel[0]: target_hierarchy.channel_index(target_name, channel)
+        for channel in target_joint.channels if channel.endswith("position")
+    }
+    if not target_columns:
+        return
+    translations = np.zeros((source_motion.frame_count, 3), dtype=np.float64)
+    for channel in source_hierarchy.root_joint.channels:
+        if channel.endswith("position"):
+            column = source_hierarchy.channel_index(source_hierarchy.root_name, channel)
+            translations[:, "XYZ".index(channel[0])] = source_motion.values[:, column]
+    desired_positions = scale * (np.asarray(source_hierarchy.root_joint.offset) + translations)
+    if source_root_height is None:
+        source_root_height = source_hierarchy.root_joint.offset[up_axis_index]
+    if target_mapped_root_height is None:
+        rest_positions, _ = compute_global_transforms_from_local(target_hierarchy)
+        target_mapped_root_height = rest_positions[0, target_hierarchy.joint_index(target_name), up_axis_index]
+    desired_positions[:, up_axis_index] += float(target_mapped_root_height) - scale * float(source_root_height)
+    if target_joint.parent == -1:
+        local_positions = desired_positions
+    else:
+        positions, rotations = compute_global_transforms(
+            Motion(target_hierarchy, target_values, source_motion.frame_time)
+        )
+        parent = target_joint.parent
+        local_positions = np.einsum(
+            "fji,fj->fi", rotations[:, parent], desired_positions - positions[:, parent]
+        )
+    displacement = local_positions - np.asarray(target_joint.offset)
+    # TODO: Recover components unsupported by target channels via IK or another
+    # algorithm. For now, write only available axes, allowing trajectory loss.
+    for axis, column in target_columns.items():
+        target_values[:, column] = displacement[:, "XYZ".index(axis)]
 
 
 def estimate_floor_level(

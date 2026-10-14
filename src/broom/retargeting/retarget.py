@@ -29,11 +29,13 @@ def retarget_mapped_motion(
     joint_map: Mapping[str, str],
     *,
     scale: float = 1.0,
-    rotation_correction: str = "rest_pose",
+    rotation_correction: str = "local_orientation",
     floor_height: float | None = None,
-    floor_up_axis: str = "Y",
+    up_axis: str = "Y",
     floor_use_rest_pose: bool = False,
     floor_first_frame_only: bool = True,
+    source_root_height: float | None = None,
+    target_mapped_root_height: float | None = None,
 ) -> Motion:
     """Transfer animation using an explicit source-to-target joint mapping.
 
@@ -49,27 +51,34 @@ def retarget_mapped_motion(
         but names must exist and target names must be unique. No additional
         correspondences are inferred.
     scale : float, default=1.0
-        Finite positive multiplier for transferred translations. Root-to-root
-        translations are first rebased to their initial source values.
-    rotation_correction : {"rest_pose", "local_orientation", "none"}, default="rest_pose"
+        Finite positive multiplier for transferred translations.
+        Source root placement is scaled too; it is not anchored to frame zero.
+    rotation_correction : {"rest_pose", "local_orientation", "none"}, default="local_orientation"
         ``rest_pose`` estimates joint bases from rest-position directions.
         ``local_orientation`` uses global rest orientations computed by FK and
-        also converts non-root translations between parent rest bases.
+        also converts non-root source translations between parent rest bases.
         ``none`` converts Euler order without rest-basis correction.
         Rotations are transferred only when both joints have three rotation
         channels. The other groups are left at zero.
     floor_height : float or None, default=None
         If supplied, shift the whole output clip so its estimated floor reaches
-        this coordinate along ``floor_up_axis``, in target length units.
+        this coordinate along ``up_axis``, in target length units.
         This is constant alignment, not foot-contact optimization.
-    floor_up_axis : {"X", "Y", "Z"}, default="Y"
-        Axis used for optional floor estimation and alignment.
+    up_axis : {"X", "Y", "Z"}, default="Y"
+        Vertical axis for height transfer and optional floor alignment.
     floor_use_rest_pose : bool, default=False
         Include a zero-channel-rotation pose with first-frame translations in
         the floor estimate. Static joint orientations remain applied.
     floor_first_frame_only : bool, default=True
         Estimate the animated floor from the first frame instead of all frames.
         The resulting constant shift still applies to the entire clip.
+    source_root_height : float or None, default=None
+        Source root standing height above zero ground, in source units.
+        None uses its global rest coordinate along ``up_axis``.
+    target_mapped_root_height : float or None, default=None
+        Standing height of the source root's mapped target joint, in target
+        units. None uses that joint's global rest coordinate. This joint need
+        not be the target root. Heights must be finite; no floor is inferred.
 
     Returns
     -------
@@ -80,9 +89,8 @@ def retarget_mapped_motion(
     Raises
     ------
     ValueError
-        If the mapping, scale or correction mode is invalid, floor alignment
-        cannot be performed, or a translation cannot be represented in
-        ``local_orientation`` mode.
+        If the mapping, scale, correction mode, axis or height is invalid,
+        or floor alignment cannot be performed.
 
     Notes
     -----
@@ -90,11 +98,17 @@ def retarget_mapped_motion(
     zero rotations remain zero. It does not compensate for omitted animated
     ancestors or solve different chain topologies.
 
-    In ``local_orientation`` mode, missing source translation axes mean zero.
-    A missing non-root target axis is rejected if its transformed displacement
-    exceeds 1e-8 in target length units. Root/non-root translation pairs are
-    rejected when the source has position channels. Root-to-root transfer and
-    the other modes copy only matching position channels.
+    The mapped source root follows its scaled skeleton-space trajectory,
+    with vertical correction ``target_height - scale * source_height``.
+    The first sample is never subtracted; horizontal placement is scaled.
+    Its target channels account for target offset and animated parent FK.
+    No mapping means no root trajectory transfer. Root orientation does not
+    rotate this skeleton-space trajectory.
+
+    Non-root source translations use parent rest-basis conversion in
+    ``local_orientation`` mode, or matching axes in the other modes.
+    Missing target position channels discard components without an error;
+    unsupported rotation groups are also skipped. This can lose motion.
     """
 
     validate_joint_mapping(
@@ -136,6 +150,9 @@ def retarget_mapped_motion(
         target_values=target_values,
         scale=scale,
         rotation_correction=rotation_correction,
+        up_axis=up_axis,
+        source_root_height=source_root_height,
+        target_mapped_root_height=target_mapped_root_height,
     )
     output_motion = Motion(
         target_hierarchy, target_values, source_motion.frame_time
@@ -144,7 +161,7 @@ def retarget_mapped_motion(
         output_motion = align_root_to_floor(
             output_motion,
             floor_height=floor_height,
-            up_axis=floor_up_axis,
+            up_axis=up_axis,
             use_rest_pose=floor_use_rest_pose,
             first_frame_only=floor_first_frame_only,
         )
@@ -159,13 +176,15 @@ def retarget_motion(
     min_score: float = 0.65,
     scale: float | None = None,
     auto_scale: bool = True,
-    rotation_correction: str = "rest_pose",
+    rotation_correction: str = "local_orientation",
     floor_align: bool = True,
     floor_height: float = 0.0,
     strict: bool = False,
-    floor_up_axis: str = "Y",
+    up_axis: str = "Y",
     floor_use_rest_pose: bool = False,
     floor_first_frame_only: bool = True,
+    source_root_height: float | None = None,
+    target_mapped_root_height: float | None = None,
 ) -> RetargetResult:
     """Suggest joint correspondences and retarget a motion onto a target skeleton.
 
@@ -186,10 +205,10 @@ def retarget_motion(
     auto_scale : bool, default=True
         Estimate the target/source rest-height ratio. Requires ``scale=None``.
         With this option disabled, an explicit scale is required.
-    rotation_correction : {"rest_pose", "local_orientation", "none"}, default="rest_pose"
+    rotation_correction : {"rest_pose", "local_orientation", "none"}, default="local_orientation"
         ``rest_pose`` corrects rotations using bases estimated from joint
         positions. ``local_orientation`` uses FK-derived global rest bases
-        and converts non-root translations between parent rest bases.
+        and converts non-root source translations between parent rest bases.
         ``none`` transfers rotations with Euler-order conversion only.
         See ``retarget_mapped_motion`` for channel support and limitations.
     floor_align : bool, default=True
@@ -201,13 +220,20 @@ def retarget_motion(
     strict : bool, default=False
         Reject a mapping if any source or target joint remains unmatched.
         This checks mapping completeness, not kinematic equivalence.
-    floor_up_axis : {"X", "Y", "Z"}, default="Y"
-        Axis for floor estimation and alignment.
+    up_axis : {"X", "Y", "Z"}, default="Y"
+        Vertical axis for height transfer and optional floor alignment.
     floor_use_rest_pose : bool, default=False
         Include a zero-channel-rotation pose with first-frame translations in
         the floor estimate, retaining static joint orientations.
     floor_first_frame_only : bool, default=True
         Estimate the animated floor from the first frame rather than all frames.
+    source_root_height : float or None, default=None
+        Source root standing height above zero ground, in source units.
+        None uses its global rest coordinate along ``up_axis``.
+    target_mapped_root_height : float or None, default=None
+        Standing height of the source root's mapped target joint, in target
+        units. None uses that joint's global rest coordinate. This joint need
+        not be the target root. Heights must be finite; no floor is inferred.
 
     Returns
     -------
@@ -220,7 +246,7 @@ def retarget_motion(
     ------
     ValueError
         If the scaling policy is inconsistent, strict mapping is incomplete,
-        or mapping/transfer/floor-alignment validation fails.
+        or mapping/transfer/height/floor-alignment validation fails.
 
     Notes
     -----
@@ -268,9 +294,11 @@ def retarget_motion(
         scale=resolved_scale,
         rotation_correction=rotation_correction,
         floor_height=floor_height if floor_align else None,
-        floor_up_axis=floor_up_axis,
+        up_axis=up_axis,
         floor_use_rest_pose=floor_use_rest_pose,
         floor_first_frame_only=floor_first_frame_only,
+        source_root_height=source_root_height,
+        target_mapped_root_height=target_mapped_root_height,
     )
     return RetargetResult(
         motion=output_motion,
@@ -290,17 +318,24 @@ def retarget_bvh_file(
     min_score: float = 0.65,
     scale: float | None = None,
     auto_scale: bool = True,
-    rotation_correction: str = "rest_pose",
+    rotation_correction: str = "local_orientation",
     floor_align: bool = True,
     floor_height: float = 0.0,
     strict: bool = False,
     precision: int = 6,
     *,
-    floor_up_axis: str = "Y",
+    up_axis: str = "Y",
     floor_use_rest_pose: bool = False,
     floor_first_frame_only: bool = True,
+    source_root_height: float | None = None,
+    target_mapped_root_height: float | None = None,
 ) -> RetargetResult:
-    """Load BVH motions, retarget onto the target hierarchy, and write BVH."""
+    """Load BVH motions, retarget onto the target hierarchy, and write BVH.
+
+    ``source_root_height`` and ``target_mapped_root_height`` override the
+    standing baselines along ``up_axis`` without modifying either hierarchy.
+    Parameters follow ``retarget_motion``; floor alignment runs afterwards.
+    """
 
     if known_joint_map is not None and mapping_path is not None:
         raise ValueError("Pass either known_joint_map or mapping_path, not both.")
@@ -320,9 +355,11 @@ def retarget_bvh_file(
         floor_align=floor_align,
         floor_height=floor_height,
         strict=strict,
-        floor_up_axis=floor_up_axis,
+        up_axis=up_axis,
         floor_use_rest_pose=floor_use_rest_pose,
         floor_first_frame_only=floor_first_frame_only,
+        source_root_height=source_root_height,
+        target_mapped_root_height=target_mapped_root_height,
     )
     write_bvh(result.motion, output_path, precision=precision)
     return result

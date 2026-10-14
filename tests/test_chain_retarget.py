@@ -302,3 +302,32 @@ def test_one_link_and_hundred_link_target_chains_can_coexist():
     assert np.isfinite(result.values).all()
     np.testing.assert_allclose(np.linalg.norm(points[:, 4:] - points[:, 3:-1], axis=-1), .02, atol=1e-8)
     np.testing.assert_allclose(np.linalg.norm(points[:, 2] - points[:, 1], axis=-1), 2, atol=1e-8)
+
+
+@pytest.mark.parametrize('height', [None, 2.])
+def test_chain_wrapper_forwards_height(height):
+    from broom.retargeting.retarget import retarget_mapped_motion
+
+    positions = ('Xposition', 'Yposition', 'Zposition')
+    h = Hierarchy((Joint('root', -1, (0, 0, 0), positions + XYZ),
+                   Joint('hand', 0, (1, 0, 0), XYZ)))
+    source = motion(h)
+    source.values[:, h.channel_index('root', 'Xposition')] = [-10, -8, -6]
+    mapping = {'root': 'root', 'hand': 'hand'}
+    initial = retarget_mapped_motion(source, h, mapping, scale=0.5,
+                                    rotation_correction='none', source_root_height=height, target_mapped_root_height=3., up_axis="Z")
+    expected = refine_mapped_chains(source, initial, mapping, chains=[('root', 'hand')])
+    actual = retarget_mapped_chains(source, h, mapping, chains=[('root', 'hand')],
+                                   scale=0.5, source_root_height=height, target_mapped_root_height=3., up_axis="Z")
+    np.testing.assert_allclose(actual.values, expected.values, atol=1e-12)
+    np.testing.assert_allclose(actual.values[:, 0], [-5, -4, -3])
+
+
+def test_chain_wrapper_accepts_unmapped_source_root():
+    source = motion(chain(('root', 'shoulder', 'hand'), (1, 1)))
+    target = chain(('base', 'arm', 'palm'), (1, 1))
+    mapping = {'shoulder': 'arm', 'hand': 'palm'}
+    output = retarget_mapped_chains(source, target, mapping,
+                                   chains=[('shoulder', 'hand')])
+    np.testing.assert_allclose(compute_global_transforms(output)[0],
+                               compute_global_transforms(source)[0], atol=1e-12)

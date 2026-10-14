@@ -86,6 +86,8 @@ def transfer_fk_rotations(
         source_indices = source_hierarchy.rotation_channel_indices(source_name)
         target_indices = target_hierarchy.rotation_channel_indices(target_name)
         if len(source_indices) != 3 or len(target_indices) != 3:
+            # TODO: Recover motion unsupported by these channel layouts using
+            # IK or another retargeting algorithm; skipping may lose motion.
             continue
 
         source_order = "".join(

@@ -38,6 +38,9 @@ def retarget_mapped_chains(
     chains: Sequence[tuple[str, str]],
     scale: float = 1.0,
     rotation_correction: str = "none",
+    source_root_height: float | None = None,
+    target_mapped_root_height: float | None = None,
+    up_axis: str = "Y",
 ) -> Motion:
     """Compose explicit mapped transfer and geometric chain refinement.
 
@@ -46,6 +49,12 @@ def retarget_mapped_chains(
     target rest geometry. No automatic mapping, scale estimation or floor shift
     is performed. Only ``rotation_correction='none'`` is supported: heuristic
     rest-frame corrections are not calibration for this geometric algorithm.
+
+    ``source_root_height`` and ``target_mapped_root_height`` override standing
+    heights in source and target units. None uses global rest coordinates
+    along ``up_axis`` (X/Y/Z, default Y). No floor is inferred. These options
+    affect initial mapped transfer only. Refinement preserves translations,
+    but ancestor rotations may change the recipient's world trajectory.
 
     See :func:`refine_mapped_chains` for geometric and rotation-DOF restrictions.
     """
@@ -63,6 +72,9 @@ def retarget_mapped_chains(
     initial = retarget_mapped_motion(
         source_motion, target_hierarchy, mapping,
         scale=scale, rotation_correction="none",
+        source_root_height=source_root_height,
+        target_mapped_root_height=target_mapped_root_height,
+        up_axis=up_axis,
     )
     return refine_mapped_chains(source_motion, initial, mapping, chains=chains)
 
