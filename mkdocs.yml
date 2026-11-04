@@ -1,0 +1,74 @@
+site_name: Broom
+site_description: Python tools for skeletal animation, motion editing and retargeting
+docs_dir: docs
+site_dir: site
+# dev_addr: 127.0.0.1:8089
+theme:
+  name: material
+  language: en
+  palette:
+  - scheme: default
+    toggle:
+      icon: material/brightness-7
+      name: Switch to dark mode
+  - scheme: slate
+    toggle:
+      icon: material/brightness-4
+      name: Switch to light mode
+  features:
+  - navigation.top
+  - content.code.copy
+markdown_extensions:
+- admonition
+- pymdownx.details
+- pymdownx.superfences
+plugins:
+- search
+- mkdocstrings:
+    handlers:
+      python:
+        paths:
+        - src
+        options:
+          show_source: false
+          show_root_heading: true
+          heading_level: 2
+          members_order: source
+          docstring_style: numpy
+          show_signature_annotations: true
+          separate_signature: true
+validation:
+  nav:
+    omitted_files: warn
+  links:
+    not_found: warn
+    unrecognized_links: warn
+    anchors: warn
+nav:
+- Home: index.md
+- Getting started:
+  - Installation: getting-started/installation.md
+  - First example: getting-started/quickstart.md
+- Concepts:
+  - Data model: concepts/data-model.md
+  - Coordinates and timing: concepts/coordinates.md
+- Guides:
+  - BVH I/O: guides/io.md
+  - Editing: guides/editing.md
+  - Kinematics: guides/kinematics.md
+  - Interpolation: guides/interpolation.md
+  - Root motion: guides/root-motion.md
+  - Retargeting: guides/retargeting.md
+  - Space-time usage: spacetime_usage.md
+  - Visualization: visualization.md
+- API reference:
+  - Joint: api/joint.md
+  - Hierarchy: api/hierarchy.md
+  - Motion: api/motion.md
+  - BVH I/O: api/io.md
+  - Kinematics: api/kinematics.md
+  - Rotations: api/rotations.md
+  - Operations and interpolation: api/operations.md
+  - Retargeting: api/retargeting.md
+  - Space-time constraints and optimization: api/spacetime.md
+  - Visualization: api/visualization.md
